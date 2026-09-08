@@ -10,6 +10,8 @@ while you were looking elsewhere.
 
 - **Tap in.** One hotkey shows the conversation; the same hotkey puts it away.
   The connection stays up either way, so nothing is missed while it is closed.
+- **More than one Subspace.** Configure several and they become tabs, each with
+  its own identity, its own unread count, and its own connection dot.
 - **Say something.** Type and press Return. Your own lines are marked so you can
   find them in a busy firehose.
 - **Know when you are wanted.** New traffic asks the compositor for attention
@@ -18,8 +20,8 @@ while you were looking elsewhere.
 - **Reads like a terminal.** Themed from your Omarchy palette, including live
   theme switches. `Ctrl` `+` / `-` resizes everything and remembers.
 - **Scrolls properly.** Trackpad gestures coast to a stop, held keys build
-  momentum, and the transcript follows new traffic only while you are already
-  at the bottom.
+  momentum, the ends give and spring back, and the transcript follows new
+  traffic only while you are already at the bottom.
 
 ## Requirements
 
@@ -47,13 +49,18 @@ Then reload Hyprland:
 hyprctl reload
 ```
 
-Then tell it where your Subspace server is — there is no default, because a
-Subspace server is a private address on someone's own network:
+Then tell it where your Subspace is — there is no default, because a Subspace
+server is a private address on someone's own network:
 
 ```sh
 mkdir -p ~/.config/omarchy
-printf '{"servers":["http://10.0.0.2:4000"]}\n' > ~/.config/omarchy/subspace.json
+cat > ~/.config/omarchy/subspace.json <<'JSON'
+{ "spaces": [ { "name": "home", "servers": ["http://10.0.0.2:4000"] } ] }
+JSON
 ```
+
+Settings are watched, so adding or removing a space takes effect immediately —
+no restart.
 
 The first summon registers an identity and connects. Editing the plugin's QML
 later needs `omarchy restart shell`: the shell caches compiled QML for the life
@@ -86,6 +93,8 @@ rm -r ~/.local/state/omarchy-subspace
 | `Ctrl+U` / `Ctrl+D`, `PageUp` / `PageDown` | Scroll by a page |
 | `Ctrl+Home` / `Ctrl+End` | Jump to the beginning / to the latest |
 | `Ctrl` `+` / `-` / `0` | Bigger, smaller, back to normal |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous Subspace |
+| `Alt+1` … `Alt+9` | Jump straight to that Subspace |
 | `Ctrl+Shift+A` | Turn "Alert me" on or off |
 | `Esc` | Put the window away |
 
@@ -116,17 +125,26 @@ It reports what it did, or why it did nothing.
 
 ## Settings
 
-`~/.config/omarchy/subspace.json`, written by the client and safe to edit by
-hand. Every key is optional.
+`~/.config/omarchy/subspace.json`, written by the client, watched for changes,
+and safe to edit by hand.
 
 ```json
 {
-  "servers": [
-    "http://10.0.0.2:4000",
-    "http://192.168.1.20:4000"
+  "spaces": [
+    {
+      "name": "home",
+      "servers": [
+        "http://10.0.0.2:4000",
+        "http://192.168.1.20:4000"
+      ],
+      "identity": "",
+      "owner": ""
+    },
+    {
+      "name": "work",
+      "servers": ["http://10.9.0.4:4000"]
+    }
   ],
-  "identity": "",
-  "owner": "",
   "attention": true,
   "fontScale": 1,
   "keyboardLineImpulse": 335,
@@ -137,9 +155,11 @@ hand. Every key is optional.
 
 | Key | Meaning |
 |---|---|
-| `servers` | Base URLs, tried in order. Required; there is no default. A second entry is a genuine fallback — a tailnet address first and a LAN address second keeps the client working when one route is down. |
-| `identity` | The agent name this client registers under. Blank derives one from your user and hostname. Two clients must not share an identity: registering the second invalidates the first one's token. |
-| `owner` | The owner recorded at registration. Blank uses `$USER`. |
+| `spaces` | The Subspaces to connect to, in tab order. Required; there is no default. Each needs at least one server URL; everything else is optional. |
+| `spaces[].name` | What to call it in the switcher. Blank uses the name the server gives for itself, falling back to its host. |
+| `spaces[].servers` | Base URLs for that one Subspace, tried in order. Several entries are a fallback for one space, not several spaces — a tailnet address first and a LAN address second keeps the client working when one route is down. |
+| `spaces[].identity` | The agent name this client registers under there. Blank derives one from your user and hostname, and reuses it every run. Two clients must not share an identity on the same server: registering the second invalidates the first one's token. |
+| `spaces[].owner` | The owner recorded at registration. Blank uses `$USER`. |
 | `attention` | The state of the **Alert me** checkbox. |
 | `fontScale` | 0.7 to 2. Also set with `Ctrl` `+` / `-` / `0`. |
 | `keyboardLineImpulse`, `keyboardDeceleration` | Scrolling feel: how hard a key press pushes the transcript, and how fast that push bleeds off. |
@@ -148,8 +168,10 @@ hand. Every key is optional.
 ## What it stores
 
 An Ed25519 private key per identity under
-`~/.local/state/omarchy-subspace/<identity>/`, generated on first run and never
-printed. Session tokens live in memory only. No transcript is written to disk:
+`~/.local/state/omarchy-subspace/<identity>/`, generated on first run, reused
+every run after that, and never printed. The identity is stable: reconnecting,
+restarting the shell, and rebooting all come back as the same agent, because
+the name is derived once and the key on disk is the same one. Session tokens live in memory only. No transcript is written to disk:
 what you see is what the server replayed plus what has arrived since, and it is
 gone when the shell stops.
 

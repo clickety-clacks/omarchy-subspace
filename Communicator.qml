@@ -3,9 +3,9 @@ import Quickshell
 import Quickshell.Io
 import qs.Commons
 
-// Plugin entry point. Owns durable settings, the one bridge process, the one
-// message model, and the window that shows them. The shell keeps this item
-// loaded (`keepLoaded` in the manifest) so the connection survives closing the
+// Plugin entry point. Owns durable settings, one connection per configured
+// Subspace, and the window that shows them. The shell keeps this item loaded
+// (`keepLoaded` in the manifest) so those connections survive closing the
 // window: traffic that arrives while you are away is still there when you
 // come back.
 Item {
@@ -22,12 +22,10 @@ Item {
   readonly property bool opened: window.visible
 
   // ------------------------------------------------------------- settings
-  // Deliberately empty: a Subspace server is a private address on someone's
-  // own network, so there is no default worth shipping. The window says what
-  // to configure until one is set.
-  property var servers: []
-  property string identity: ""
-  property string owner: ""
+  // Each entry is { name, servers[], identity, owner }. Deliberately empty by
+  // default: a Subspace server is a private address on someone's own network,
+  // so there is no default worth shipping.
+  property var spaceList: []
   property bool attention: true
   property real fontScale: 1
   property real keyboardLineImpulse: 335
@@ -37,11 +35,13 @@ Item {
   readonly property real minFontScale: 0.7
   readonly property real maxFontScale: 2
 
-  readonly property string resolvedOwner: owner !== "" ? owner
-    : (Quickshell.env("USER") !== "" ? Quickshell.env("USER") : "unknown")
-  readonly property string resolvedIdentity: identity !== "" ? identity
-    : sanitizeName(resolvedOwner + "-" + hostname + "-communicator")
   property string hostname: "omarchy"
+  property bool hostnameResolved: false
+  property bool settingsResolved: false
+
+  readonly property string configHint:
+    "No Subspace configured yet. Put one in \"spaces\" in " + root.settingsPath
+    + " — for example [{\"name\":\"home\",\"servers\":[\"http://10.0.0.2:4000\"]}]."
 
   function sanitizeName(value) {
     var cleaned = String(value || "").replace(/[^A-Za-z0-9_-]+/g, "-")
@@ -49,20 +49,84 @@ Item {
     return cleaned === "" ? "subspace-communicator" : cleaned
   }
 
-  // ------------------------------------------------------ connection state
-  property string connectionState: "starting"
-  property string connectionDetail: ""
-  property string serverName: ""
-  property string serverUrl: ""
-  property string agentId: ""
-  property int unread: 0
-  property int sendSequence: 0
-  property var pendingSends: ({})
+  readonly property string defaultOwner:
+    Quickshell.env("USER") !== "" ? Quickshell.env("USER") : "unknown"
+  readonly property string defaultIdentity:
+    sanitizeName(defaultOwner + "-" + hostname + "-communicator")
 
-  readonly property bool connected: connectionState === "connected"
+  // ---------------------------------------------------------- connections
+  property var linkList: []
+  property int activeIndex: 0
+  property var activeLink: null
 
-  ListModel { id: messages }
-  readonly property var messageModel: messages
+  // The window binds to these rather than reaching through activeLink, so a
+  // space with no connection yet still renders something truthful.
+  readonly property string connectionState: activeLink ? activeLink.connectionState
+    : (spaceList.length === 0 ? "unconfigured" : "starting")
+  readonly property string connectionDetail: activeLink ? activeLink.connectionDetail
+    : (spaceList.length === 0 ? root.configHint : "")
+  readonly property bool connected: activeLink !== null && activeLink.connected
+  readonly property string serverName: activeLink ? activeLink.serverName : ""
+  readonly property string resolvedIdentity: activeLink ? activeLink.identity : ""
+  readonly property var messageModel: activeLink ? activeLink.messageModel : null
+  readonly property int unread: activeLink ? activeLink.unread : 0
+  readonly property string unreadAnchorId: activeLink ? activeLink.unreadAnchorId : ""
+
+  Item {
+    id: linkHost
+    visible: false
+
+    Repeater {
+      id: links
+      model: root.spaceList
+
+      delegate: SubspaceLink {
+        required property var modelData
+        pluginDir: root.pluginDir
+        servers: modelData.servers
+        configuredName: String(modelData.name || "")
+        identity: String(modelData.identity || "") !== ""
+          ? root.sanitizeName(modelData.identity) : root.defaultIdentity
+        owner: String(modelData.owner || "") !== ""
+          ? String(modelData.owner) : root.defaultOwner
+        messageLimit: root.messageLimit
+        onMessageReceived: function(space, event) { window.messageArrived(space, event) }
+        onSendRejected: function(space, text, detail) { window.sendFailed(space, text, detail) }
+      }
+    }
+
+    onChildrenChanged: root.refreshLinks()
+  }
+
+  // Repeater items are not a bindable list, so the array the window iterates
+  // is rebuilt whenever the set of spaces changes.
+  function refreshLinks() {
+    var collected = []
+    for (var index = 0; index < links.count; index++) {
+      var item = links.itemAt(index)
+      if (item) collected.push(item)
+    }
+    root.linkList = collected
+    root.activeIndex = collected.length === 0
+      ? 0 : Math.max(0, Math.min(root.activeIndex, collected.length - 1))
+    root.activeLink = collected.length === 0 ? null : collected[root.activeIndex]
+  }
+
+  onActiveIndexChanged: root.refreshLinks()
+
+  function selectSpace(index) {
+    var next = Number(index)
+    if (isNaN(next) || next < 0 || next >= root.linkList.length) return "unknown"
+    root.activeIndex = next
+    window.spaceSelected()
+    return root.activeLink ? root.activeLink.displayName : "ok"
+  }
+
+  function cycleSpace(step) {
+    if (root.linkList.length < 2) return "one space"
+    var next = (root.activeIndex + step + root.linkList.length) % root.linkList.length
+    return root.selectSpace(next)
+  }
 
   // ----------------------------------------------------------- shell verbs
   function open(payload) {
@@ -71,9 +135,7 @@ Item {
     Qt.callLater(function() { window.focusComposer() })
   }
 
-  function close() {
-    window.visible = false
-  }
+  function close() { window.visible = false }
 
   function toggle() { opened ? close() : open("{}") }
 
@@ -91,147 +153,16 @@ Item {
   // Ask the compositor for attention right now. Whether urgency does anything
   // visible is the desktop's business, not this client's, so there has to be a
   // way to find out which side is quiet.
-  function testAlert() {
-    return window.raiseAttention()
-  }
+  function testAlert() { return window.raiseAttention() }
 
   function reconnect() {
-    bridge.running = false
-    restartTimer.restart()
+    for (var index = 0; index < root.linkList.length; index++)
+      root.linkList[index].reconnect()
     return "ok"
   }
 
-  // ------------------------------------------------------------- messages
-  function appendMessage(event) {
-    var name = String(event.agentName || "unknown")
-    var previous = messages.count > 0 ? messages.get(messages.count - 1) : null
-    var timestamp = String(event.ts || "")
-    messages.append({
-      messageId: String(event.id || ""),
-      agentId: String(event.agentId || ""),
-      agentName: name,
-      body: String(event.text || ""),
-      timestamp: timestamp,
-      own: event.own === true,
-      replay: event.replay === true,
-      // Consecutive lines from one agent read as one turn, so only the first
-      // carries a name. A pause long enough to be a new thought breaks the run.
-      grouped: previous !== null && previous.agentName === name
-        && minutesBetween(previous.timestamp, timestamp) < 5
-    })
-    while (messages.count > root.messageLimit) messages.remove(0, 1)
-  }
-
-  function minutesBetween(before, after) {
-    var start = Date.parse(before)
-    var end = Date.parse(after)
-    if (isNaN(start) || isNaN(end)) return 999
-    return Math.abs(end - start) / 60000
-  }
-
   function send(text) {
-    var body = String(text || "").replace(/\s+$/, "")
-    if (body === "") return false
-    if (!bridge.running) return false
-    root.sendSequence += 1
-    var ref = root.sendSequence
-    var tracked = ({})
-    for (var key in root.pendingSends) tracked[key] = root.pendingSends[key]
-    tracked[String(ref)] = body
-    root.pendingSends = tracked
-    bridge.write(JSON.stringify({ type: "send", text: body, ref: ref }) + "\n")
-    return true
-  }
-
-  function forgetSend(ref) {
-    var remaining = ({})
-    for (var key in root.pendingSends)
-      if (key !== String(ref)) remaining[key] = root.pendingSends[key]
-    root.pendingSends = remaining
-  }
-
-  // --------------------------------------------------------------- bridge
-  function handleBridgeLine(line) {
-    var event
-    try { event = JSON.parse(String(line || "")) } catch (error) { return }
-    var kind = String(event.type || "")
-
-    if (kind === "message") {
-      root.appendMessage(event)
-      window.messageArrived(event)
-      return
-    }
-    if (kind === "status") {
-      root.connectionState = String(event.state || "")
-      root.connectionDetail = String(event.detail || "")
-      return
-    }
-    if (kind === "identity") {
-      root.agentId = String(event.agentId || "")
-      return
-    }
-    if (kind === "server") {
-      root.serverName = String(event.name || "")
-      root.serverUrl = String(event.url || "")
-      return
-    }
-    if (kind === "sent") {
-      var ref = Number(event.ref || 0)
-      if (event.ok !== true) window.sendFailed(root.pendingSends[String(ref)] || "",
-        String(event.detail || "The server refused the message."))
-      root.forgetSend(ref)
-      return
-    }
-    if (kind === "fatal") {
-      root.connectionState = "fatal"
-      root.connectionDetail = String(event.detail || "")
-      return
-    }
-  }
-
-  readonly property var bridgeCommand: {
-    var command = ["python3", "-u", root.pluginDir + "/bridge/subspace.py",
-      "--identity", root.resolvedIdentity, "--owner", root.resolvedOwner]
-    for (var index = 0; index < root.servers.length; index++)
-      command = command.concat(["--url", String(root.servers[index])])
-    return command
-  }
-
-  Process {
-    id: bridge
-    command: root.bridgeCommand
-    running: false
-    stdinEnabled: true
-    stdout: SplitParser { onRead: function(line) { root.handleBridgeLine(line) } }
-    stderr: SplitParser {
-      // The bridge keeps its machine-readable stream on stdout; stderr carries
-      // retry diagnostics that the status line already summarizes.
-      onRead: function(line) { }
-    }
-    onExited: function(code) {
-      root.connectionState = "stopped"
-      root.connectionDetail = "The Subspace bridge exited (" + code + ")."
-      restartTimer.restart()
-    }
-  }
-
-  Timer {
-    id: restartTimer
-    interval: 2000
-    repeat: false
-    onTriggered: root.startBridge()
-  }
-
-  function startBridge() {
-    if (!root.settingsResolved || !root.hostnameResolved || bridge.running) return
-    if (root.servers.length === 0) {
-      root.connectionState = "unconfigured"
-      root.connectionDetail = "No Subspace server yet. Put its base URL in "
-        + "\"servers\" in " + root.settingsPath + " — for example "
-        + "[\"http://10.0.0.2:4000\"]."
-      return
-    }
-    bridge.running = true
+    return root.activeLink !== null && root.activeLink.send(text)
   }
 
   // ------------------------------------------------------------- settings
@@ -242,9 +173,9 @@ Item {
     onLoaded: {
       var value = String(text() || "").split("\n")[0].trim()
       if (value !== "") root.hostname = value
-      root.startWhenReady()
+      root.hostnameResolved = true
     }
-    onLoadFailed: root.startWhenReady()
+    onLoadFailed: root.hostnameResolved = true
   }
 
   FileView {
@@ -254,18 +185,63 @@ Item {
     atomicWrites: true
     printErrors: false
     onLoaded: root.loadSettings(text())
-    // First run: the file does not exist yet. Load defaults so the client
-    // still starts and so the first preference change can be written.
+    // First run: the file does not exist yet. Load defaults so the window
+    // still opens and says what to configure.
     onLoadFailed: root.loadSettings("")
     onFileChanged: reload()
   }
 
-  property bool hostnameResolved: false
-  property bool settingsResolved: false
+  // Spaces are only handed to the Repeater once the hostname is known, so a
+  // link never starts with a placeholder identity and then has to re-register.
+  property var pendingSpaces: []
+  onHostnameResolvedChanged: root.applySpaces()
 
-  function startWhenReady() {
-    root.hostnameResolved = true
-    root.startBridge()
+  function applySpaces() {
+    if (!root.hostnameResolved || !root.settingsResolved) return
+    root.spaceList = root.pendingSpaces
+    Qt.callLater(root.refreshLinks)
+  }
+
+  function normalizeSpaces(parsed) {
+    var out = []
+
+    function urlsOf(value) {
+      if (!Array.isArray(value)) return []
+      var urls = []
+      for (var index = 0; index < value.length; index++) {
+        var url = String(value[index] || "").trim()
+        if (url !== "") urls.push(url)
+      }
+      return urls
+    }
+
+    if (Array.isArray(parsed.spaces)) {
+      for (var index = 0; index < parsed.spaces.length; index++) {
+        var entry = parsed.spaces[index]
+        if (!entry || typeof entry !== "object") continue
+        var urls = urlsOf(entry.servers)
+        if (urls.length === 0) continue
+        out.push({
+          name: String(entry.name || ""),
+          servers: urls,
+          identity: String(entry.identity || ""),
+          owner: String(entry.owner || "")
+        })
+      }
+      return out
+    }
+
+    // The single-space shape this client shipped with first. Still accepted so
+    // an existing settings file keeps working untouched.
+    var flat = urlsOf(parsed.servers)
+    if (flat.length > 0)
+      out.push({
+        name: "",
+        servers: flat,
+        identity: String(parsed.identity || ""),
+        owner: String(parsed.owner || "")
+      })
+    return out
   }
 
   function loadSettings(raw) {
@@ -273,16 +249,6 @@ Item {
     try { parsed = JSON.parse(String(raw || "") || "{}") } catch (error) { parsed = {} }
     if (!parsed || typeof parsed !== "object") parsed = {}
 
-    if (Array.isArray(parsed.servers) && parsed.servers.length > 0) {
-      var urls = []
-      for (var index = 0; index < parsed.servers.length; index++) {
-        var url = String(parsed.servers[index] || "").trim()
-        if (url !== "") urls.push(url)
-      }
-      if (urls.length > 0) root.servers = urls
-    }
-    if (typeof parsed.identity === "string") root.identity = String(parsed.identity).trim()
-    if (typeof parsed.owner === "string") root.owner = String(parsed.owner).trim()
     if (typeof parsed.attention === "boolean") root.attention = parsed.attention
     if (typeof parsed.fontScale === "number")
       root.fontScale = Math.max(root.minFontScale, Math.min(root.maxFontScale, parsed.fontScale))
@@ -293,9 +259,10 @@ Item {
     if (typeof parsed.messageLimit === "number")
       root.messageLimit = Math.max(200, Math.min(20000, Math.round(parsed.messageLimit)))
 
+    root.pendingSpaces = root.normalizeSpaces(parsed)
     root.settingsLoaded = true
     root.settingsResolved = true
-    root.startBridge()
+    root.applySpaces()
   }
 
   function saveSettings() {
@@ -333,8 +300,4 @@ Item {
   }
 
   Component.onCompleted: hostnameFile.reload()
-  Component.onDestruction: {
-    if (bridge.running) bridge.write(JSON.stringify({ type: "quit" }) + "\n")
-    bridge.running = false
-  }
 }

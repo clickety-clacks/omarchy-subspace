@@ -1,3 +1,4 @@
+import QtQml
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Window
@@ -28,6 +29,7 @@ FloatingWindow {
   readonly property int captionSize: Math.round(Style.font.caption * fontScale)
   readonly property int bodySize: Math.round(Style.font.body * fontScale)
   readonly property int titleSize: Math.round(Style.font.subtitle * fontScale)
+  readonly property int pad: Math.round(Style.spacing.panelPadding * fontScale)
 
   readonly property color statusColor: {
     if (client.connectionState === "connected") return accent
@@ -35,18 +37,18 @@ FloatingWindow {
     return urgent
   }
   readonly property string statusLabel: {
-    if (client.connectionState === "connected") return client.serverName !== "" ? client.serverName : "connected"
+    if (client.connectionState === "connected") return "connected"
     if (client.connectionState === "connecting") return "connecting"
     if (client.connectionState === "reconnecting") return "reconnecting"
-    if (client.connectionState === "fatal") return "unavailable"
     if (client.connectionState === "unconfigured") return "not configured"
+    if (client.connectionState === "fatal") return "unavailable"
     return client.connectionState
   }
 
   // ----------------------------------------------------------- transcript
   property bool followTail: true
-  property string unreadAnchorId: ""
   property string composerError: ""
+  readonly property string unreadAnchorId: client.unreadAnchorId
 
   // FloatingWindow is a Quickshell wrapper, not a QWindow. The standard
   // QtQuick attached property gives us the actual native window, which is the
@@ -66,25 +68,18 @@ FloatingWindow {
     if (native) native.requestActivate()
   }
 
-  function indexOfMessage(id) {
-    if (String(id || "") === "") return -1
-    var model = client.messageModel
-    for (var index = model.count - 1; index >= 0; index--)
-      if (model.get(index).messageId === id) return index
-    return -1
-  }
-
   function focusComposer() { composer.forceActiveFocus() }
 
-  function messageArrived(event) {
+  function messageArrived(space, event) {
     // Replayed history is what was already said before this client attached.
     // It is not news, and it must never raise urgency.
     if (event.replay === true) return
-    if (event.own === true) { win.clearUnread(); return }
-    if (win.isFocused()) { win.clearUnread(); return }
+    if (event.own === true) { space.clearUnread(); return }
+    // A message in a space you are not looking at counts, and shows on its
+    // tab, but only the window's focus decides whether the desktop is told.
+    if (space === client.activeLink && win.isFocused()) { space.clearUnread(); return }
 
-    if (win.unreadAnchorId === "") win.unreadAnchorId = String(event.id || "")
-    client.unread += 1
+    space.noteUnread(event.id)
     if (client.attention) win.raiseAttention()
   }
 
@@ -98,20 +93,18 @@ FloatingWindow {
     return "urgency requested"
   }
 
-  function clearUnread() {
-    client.unread = 0
-  }
-
   // The "new" mark outlives the unread count on purpose: the count answers
   // "is there anything?", the mark answers "where did I stop?". It goes away
   // when you have actually caught up, not the moment you glance at the window.
   function clearUnreadMarkIfCaughtUp() {
-    if (win.unreadAnchorId === "") return
+    var link = client.activeLink
+    if (!link || link.unreadAnchorId === "") return
     if (!transcript.atYEnd || !win.isFocused()) return
-    win.unreadAnchorId = ""
+    link.unreadAnchorId = ""
   }
 
-  function sendFailed(text, detail) {
+  function sendFailed(space, text, detail) {
+    if (space !== client.activeLink) return
     win.composerError = detail
     if (composer.text === "") composer.text = text
   }
@@ -120,31 +113,56 @@ FloatingWindow {
     var body = composer.text
     if (body.replace(/\s+/g, "") === "") return
     if (!client.send(body)) {
-      win.composerError = "Not connected to Subspace yet."
+      win.composerError = client.activeLink === null
+        ? "No Subspace configured yet." : "Not connected to Subspace yet."
       return
     }
     win.composerError = ""
     composer.text = ""
+    // Snap, do not glide. An animation started here would still be running
+    // when the message comes back from the server and the transcript grows,
+    // and the two would fight over contentY for the length of the animation.
     win.followTail = true
-    physics.glideToEnd()
+    win.keepTail()
   }
 
-  onVisibleChanged: {
-    if (!visible) return
-    // Coming back to a window with a backlog should land you where you stopped
-    // reading, not at the bottom past everything you missed.
-    var resume = win.indexOfMessage(win.unreadAnchorId)
-    win.clearUnread()
+  // Following the tail has to happen in the same frame the content grows in.
+  // Deferring it by even one frame is visible: the transcript jumps up as the
+  // row is added and then slides back down.
+  function keepTail() {
+    if (!win.followTail || physics.coasting) return
+    transcript.positionViewAtEnd()
+    physics.syncRaw()
+  }
+
+  function restoreReadingPosition() {
+    var link = client.activeLink
+    var resume = link ? link.indexOfMessage(link.unreadAnchorId) : -1
+    if (link) link.clearUnread()
     Qt.callLater(function() {
       if (resume >= 0) {
+        // Coming back to a backlog should land where you stopped reading, not
+        // at the bottom past everything you missed.
         win.followTail = false
         transcript.positionViewAtIndex(resume, ListView.Beginning)
       } else {
         win.followTail = true
         transcript.positionViewAtEnd()
       }
+      physics.syncRaw()
       composer.forceActiveFocus()
     })
+  }
+
+  function spaceSelected() {
+    win.composerError = ""
+    physics.stopAll()
+    win.restoreReadingPosition()
+  }
+
+  onVisibleChanged: {
+    if (!visible) return
+    win.restoreReadingPosition()
   }
 
   // ------------------------------------------------------- key handling
@@ -154,6 +172,10 @@ FloatingWindow {
     var ctrl = (event.modifiers & Qt.ControlModifier) !== 0
     var shift = (event.modifiers & Qt.ShiftModifier) !== 0
 
+    if (ctrl && (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab)) {
+      client.cycleSpace(shift ? -1 : 1)
+      return true
+    }
     if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
       win.focusComposer()
       return true
@@ -204,14 +226,16 @@ FloatingWindow {
     win.followTail = false
     physics.stopAll()
     transcript.positionViewAtBeginning()
+    physics.syncRaw()
   }
 
   function jumpToLatest() {
+    var link = client.activeLink
     win.followTail = true
-    win.clearUnread()
-    win.unreadAnchorId = ""
+    if (link) { link.clearUnread(); link.unreadAnchorId = "" }
     physics.stopAll()
     transcript.positionViewAtEnd()
+    physics.syncRaw()
   }
 
   // ------------------------------------------------------------- contents
@@ -227,6 +251,8 @@ FloatingWindow {
     Shortcut { sequence: "Tab"; onActivated: win.focusComposer() }
     Shortcut { sequence: "Shift+Tab"; onActivated: win.focusComposer() }
     Shortcut { sequence: "Escape"; onActivated: client.close() }
+    Shortcut { sequence: "Ctrl+Tab"; onActivated: client.cycleSpace(1) }
+    Shortcut { sequence: "Ctrl+Shift+Tab"; onActivated: client.cycleSpace(-1) }
     Shortcut { sequence: "Ctrl+Shift+A"; onActivated: client.toggleAttention() }
     Shortcut { sequence: "Ctrl+J"; onActivated: win.scrollImpulse(1, false) }
     Shortcut { sequence: "Ctrl+K"; onActivated: win.scrollImpulse(-1, false) }
@@ -241,6 +267,15 @@ FloatingWindow {
     Shortcut { sequence: "Ctrl+-"; onActivated: client.stepFontScale(-0.1) }
     Shortcut { sequence: "Ctrl+0"; onActivated: client.setFontScale(1) }
 
+    Instantiator {
+      model: 9
+      delegate: Shortcut {
+        required property int index
+        sequence: "Alt+" + (index + 1)
+        onActivated: client.selectSpace(index)
+      }
+    }
+
     // -------------------------------------------------------------- header
     Item {
       id: header
@@ -250,9 +285,12 @@ FloatingWindow {
       height: Math.round(Style.space(42) * win.fontScale)
 
       Row {
+        id: brand
         anchors.left: parent.left
-        anchors.leftMargin: Style.spacing.panelPadding
+        anchors.leftMargin: win.pad
         anchors.verticalCenter: parent.verticalCenter
+        anchors.right: headerRight.left
+        anchors.rightMargin: Style.spacing.lg
         spacing: Style.spacing.lg
 
         Rectangle {
@@ -280,23 +318,105 @@ FloatingWindow {
           anchors.verticalCenter: parent.verticalCenter
         }
 
+        // One space needs no switcher — it just says where you are.
         Text {
-          text: win.statusLabel
+          visible: client.linkList.length < 2
+          text: client.activeLink === null
+            ? win.statusLabel
+            : (client.activeLink.displayName
+               + (client.connected ? "" : " · " + win.statusLabel))
           color: client.connected ? win.muted : win.statusColor
           font.family: win.fontFamily
           font.pixelSize: win.captionSize
           anchors.verticalCenter: parent.verticalCenter
         }
+
+        // More than one, and the header becomes a switcher. Each tab carries
+        // its own connection dot and its own unread count, so a quiet space
+        // and a broken one do not look the same.
+        Row {
+          visible: client.linkList.length > 1
+          anchors.verticalCenter: parent.verticalCenter
+          spacing: Style.spacing.sm
+
+          Repeater {
+            model: client.linkList
+
+            delegate: Item {
+              id: tab
+              required property var modelData
+              required property int index
+              readonly property bool current: client.activeIndex === index
+
+              width: tabRow.implicitWidth + Style.spacing.controlPaddingX * 2
+              height: Math.round(Style.spacing.controlHeight * win.fontScale)
+
+              Rectangle {
+                anchors.fill: parent
+                radius: Style.cornerRadius > 0 ? Style.cornerRadius : Style.space(4)
+                color: tab.current ? Style.selectedAccentFill
+                  : (tabArea.containsMouse ? Style.hoverFill : "transparent")
+                border.width: 1
+                border.color: tab.current ? Util.alpha(win.accent, 0.55)
+                  : (tabArea.containsMouse ? Style.hoverBorderColor : "transparent")
+              }
+
+              Row {
+                id: tabRow
+                anchors.centerIn: parent
+                spacing: Style.spacing.sm
+
+                Rectangle {
+                  width: Math.round(win.captionSize * 0.5)
+                  height: width
+                  radius: width / 2
+                  anchors.verticalCenter: parent.verticalCenter
+                  color: tab.modelData.connected ? win.accent : win.urgent
+                  opacity: tab.modelData.connected ? 0.9 : 0.7
+                }
+
+                Text {
+                  text: tab.modelData.displayName
+                  anchors.verticalCenter: parent.verticalCenter
+                  color: tab.current ? win.foreground : win.muted
+                  font.family: win.fontFamily
+                  font.pixelSize: win.captionSize
+                  font.weight: tab.current ? Font.DemiBold : Font.Normal
+                }
+
+                Text {
+                  visible: tab.modelData.unread > 0
+                  text: tab.modelData.unread
+                  anchors.verticalCenter: parent.verticalCenter
+                  color: win.accent
+                  font.family: win.fontFamily
+                  font.pixelSize: win.captionSize
+                  font.weight: Font.DemiBold
+                }
+              }
+
+              MouseArea {
+                id: tabArea
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: client.selectSpace(tab.index)
+              }
+            }
+          }
+        }
       }
 
       Row {
+        id: headerRight
         anchors.right: parent.right
-        anchors.rightMargin: Style.spacing.panelPadding
+        anchors.rightMargin: win.pad
         anchors.verticalCenter: parent.verticalCenter
         spacing: Style.spacing.xl
 
         Text {
           text: client.resolvedIdentity
+          visible: text !== ""
           color: win.muted
           font.family: win.fontFamily
           font.pixelSize: win.captionSize
@@ -384,40 +504,29 @@ FloatingWindow {
       anchors.left: parent.left
       anchors.right: parent.right
       anchors.bottom: composerRule.top
-      anchors.leftMargin: Style.spacing.panelPadding
-      anchors.rightMargin: Style.spacing.panelPadding
+      anchors.leftMargin: win.pad
+      anchors.rightMargin: win.pad
       anchors.topMargin: Style.spacing.lg
-      anchors.bottomMargin: Style.spacing.panelPadding
+      anchors.bottomMargin: Style.spacing.lg
       clip: true
       model: client.messageModel
       spacing: Style.space(6)
       cacheBuffer: 800
+      // Our own gestures write contentY directly and provide their own give at
+      // the edges, so Flickable is told to leave the bounds alone.
       boundsBehavior: Flickable.StopAtBounds
       flickableDirection: Flickable.VerticalFlick
       maximumFlickVelocity: 6000
       flickDeceleration: 650
 
       onContentYChanged: {
-        physics.stopCoastAtBoundary()
         if (atYEnd) {
           win.followTail = true
           win.clearUnreadMarkIfCaughtUp()
         }
       }
-      // Delegate heights are not known when the row is appended, so following
-      // the tail has to be re-asserted as the transcript settles, not once.
-      onContentHeightChanged: if (win.followTail && !physics.coasting) tailSettle.restart()
-      onCountChanged: if (win.followTail) tailSettle.restart()
-
-      Timer {
-        id: tailSettle
-        interval: 16
-        repeat: false
-        onTriggered: {
-          if (!win.followTail || physics.coasting) return
-          transcript.positionViewAtEnd()
-        }
-      }
+      onContentHeightChanged: win.keepTail()
+      onHeightChanged: win.keepTail()
 
       delegate: MessageRow {
         width: transcript.width
@@ -442,6 +551,7 @@ FloatingWindow {
       lineImpulse: client.keyboardLineImpulse
       deceleration: client.keyboardDeceleration
       step: Math.round(Style.space(44) * win.fontScale)
+      maxOvershoot: Math.max(48, Math.min(120, Math.round(transcript.height * 0.16)))
       onUserScrolled: win.followTail = false
     }
 
@@ -450,7 +560,7 @@ FloatingWindow {
     Text {
       anchors.centerIn: transcript
       visible: transcript.count === 0
-      width: transcript.width * 0.7
+      width: transcript.width * 0.75
       horizontalAlignment: Text.AlignHCenter
       wrapMode: Text.WordWrap
       color: win.muted
@@ -529,7 +639,7 @@ FloatingWindow {
       anchors.left: parent.left
       anchors.right: parent.right
       anchors.bottom: parent.bottom
-      height: composerColumn.implicitHeight + Style.spacing.panelPadding
+      height: composerColumn.implicitHeight + win.pad * 2
 
       MouseArea { anchors.fill: parent; onClicked: win.focusComposer() }
 
@@ -538,10 +648,10 @@ FloatingWindow {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
-        anchors.leftMargin: Style.spacing.panelPadding
-        anchors.rightMargin: Style.spacing.panelPadding
-        anchors.topMargin: Math.round(Style.spacing.panelPadding / 2)
-        spacing: Style.spacing.sm
+        anchors.leftMargin: win.pad
+        anchors.rightMargin: win.pad
+        anchors.topMargin: win.pad
+        spacing: Style.spacing.md
 
         Row {
           width: parent.width
@@ -553,44 +663,73 @@ FloatingWindow {
             color: composer.activeFocus ? win.accent : win.muted
             font.family: win.fontFamily
             font.pixelSize: win.bodySize
-            y: Math.round((composer.lineHeight - implicitHeight) / 2)
           }
 
-          TextEdit {
-            id: composer
+          // The draft grows with what you are writing and then stops at a
+          // third of the window, after which it scrolls under the caret
+          // instead of eating the transcript.
+          Flickable {
+            id: composerScroll
             width: parent.width - chevron.width - Style.spacing.md
-            height: Math.min(contentHeight, win.height * 0.35)
-            readonly property real lineHeight: Math.max(1, contentHeight / Math.max(1, lineCount))
-            color: win.foreground
-            font.family: win.fontFamily
-            font.pixelSize: win.bodySize
-            wrapMode: TextEdit.Wrap
-            textFormat: TextEdit.PlainText
-            selectByMouse: true
-            selectionColor: Util.alpha(win.accent, 0.32)
-            selectedTextColor: win.background
-            cursorVisible: activeFocus
-            onTextChanged: if (win.composerError !== "") win.composerError = ""
+            readonly property int oneLine: Math.round(win.bodySize * 1.45)
+            height: Math.max(oneLine,
+              Math.min(composer.contentHeight, Math.round(win.height / 3)))
+            contentWidth: width
+            contentHeight: composer.contentHeight
+            clip: true
+            interactive: contentHeight > height
+            boundsBehavior: Flickable.StopAtBounds
 
-            Text {
-              anchors.left: parent.left
-              anchors.top: parent.top
-              visible: composer.text === ""
-              text: client.connected ? "Say something to the agents…"
-                                     : "Waiting for a connection…"
-              color: Util.alpha(win.foreground, 0.38)
-              font.family: win.fontFamily
-              font.pixelSize: win.bodySize
+            Behavior on height {
+              NumberAnimation { duration: 90; easing.type: Easing.OutCubic }
             }
 
-            Keys.onPressed: function(event) {
-              if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
-                if ((event.modifiers & Qt.ShiftModifier) !== 0) return
-                win.submit()
-                event.accepted = true
-                return
+            function revealCaret() {
+              var caret = composer.cursorRectangle
+              if (caret.y < contentY) contentY = caret.y
+              else if (caret.y + caret.height > contentY + height)
+                contentY = caret.y + caret.height - height
+            }
+
+            TextEdit {
+              id: composer
+              width: composerScroll.width
+              readonly property real lineHeight:
+                Math.max(1, contentHeight / Math.max(1, lineCount))
+              color: win.foreground
+              font.family: win.fontFamily
+              font.pixelSize: win.bodySize
+              wrapMode: TextEdit.Wrap
+              textFormat: TextEdit.PlainText
+              selectByMouse: true
+              selectionColor: Util.alpha(win.accent, 0.32)
+              selectedTextColor: win.background
+              cursorVisible: activeFocus
+              onTextChanged: if (win.composerError !== "") win.composerError = ""
+              onCursorRectangleChanged: composerScroll.revealCaret()
+
+              Text {
+                anchors.left: parent.left
+                anchors.top: parent.top
+                visible: composer.text === ""
+                text: client.linkList.length === 0
+                  ? "Configure a Subspace to start talking…"
+                  : (client.connected ? "Say something to the agents…"
+                                      : "Waiting for a connection…")
+                color: Util.alpha(win.foreground, 0.38)
+                font.family: win.fontFamily
+                font.pixelSize: win.bodySize
               }
-              if (win.handleKey(event, true)) event.accepted = true
+
+              Keys.onPressed: function(event) {
+                if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
+                  if ((event.modifiers & Qt.ShiftModifier) !== 0) return
+                  win.submit()
+                  event.accepted = true
+                  return
+                }
+                if (win.handleKey(event, true)) event.accepted = true
+              }
             }
           }
         }
