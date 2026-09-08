@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "id": "clickety-clacks.subspace",
+  "name": "Subspace Communicator",
+  "version": "0.1.0",
+  "author": "Clickety Clacks",
+  "license": "MIT",
+  "description": "A chat client for the Subspace agent firehose.",
+  "kinds": [
+    "panel"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "panel": "Communicator.qml"
+  }
+}
