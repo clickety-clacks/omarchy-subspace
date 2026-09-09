@@ -3,23 +3,22 @@ import Quickshell
 import Quickshell.Io
 import qs.Commons
 
-// Plugin entry point. Owns durable settings, one connection per configured
-// Subspace, and the window that shows them. The shell keeps this item loaded
-// (`keepLoaded` in the manifest) so those connections survive closing the
-// window: traffic that arrives while you are away is still there when you
-// come back.
-Item {
+// Application root. Owns durable settings, one connection per configured
+// Subspace, and the window that shows them.
+//
+// This is an ordinary application that happens to be written in Quickshell,
+// not part of the desktop shell. It runs in its own process, so it starts and
+// stops on its own, updates without restarting anything else, and closing its
+// window closes it. Theming still comes from the Omarchy shell's own Commons
+// singletons, which resolve because the launcher puts the shell on
+// QML_IMPORT_PATH.
+ShellRoot {
   id: root
 
-  // Set by the shell when the plugin loads.
-  property var shell: null
-  property var manifest: null
-
-  readonly property string pluginDir: Qt.resolvedUrl(".").toString().replace("file://", "").replace(/\/$/, "")
+  readonly property string appDir: Qt.resolvedUrl(".").toString().replace("file://", "").replace(/\/$/, "")
   readonly property string settingsPath: Quickshell.env("HOME") + "/.config/omarchy/subspace.json"
 
-  // The shell reads `opened` to decide whether its toggle summons or hides.
-  readonly property bool opened: window.visible
+  property bool everShown: false
 
   // ------------------------------------------------------------- settings
   // Each entry is { name, servers[], identity, owner }. Deliberately empty by
@@ -75,38 +74,35 @@ Item {
   readonly property int unread: activeLink ? activeLink.unread : 0
   readonly property string unreadAnchorId: activeLink ? activeLink.unreadAnchorId : ""
 
-  Item {
-    id: linkHost
-    visible: false
+  // Instantiator rather than Repeater: these are not visual, and an
+  // application root is not a scene to parent them into.
+  Instantiator {
+    id: links
+    model: root.spaceList
+    onObjectAdded: root.refreshLinks()
+    onObjectRemoved: root.refreshLinks()
 
-    Repeater {
-      id: links
-      model: root.spaceList
-
-      delegate: SubspaceLink {
-        required property var modelData
-        pluginDir: root.pluginDir
-        servers: modelData.servers
-        configuredName: String(modelData.name || "")
-        identity: String(modelData.identity || "") !== ""
-          ? root.sanitizeName(modelData.identity) : root.defaultIdentity
-        owner: String(modelData.owner || "") !== ""
-          ? String(modelData.owner) : root.defaultOwner
-        messageLimit: root.messageLimit
-        onMessageReceived: function(space, event) { window.messageArrived(space, event) }
-        onSendRejected: function(space, text, detail) { window.sendFailed(space, text, detail) }
-      }
+    delegate: SubspaceLink {
+      required property var modelData
+      appDir: root.appDir
+      configuredName: String(modelData.name || "")
+      identity: String(modelData.identity || "") !== ""
+        ? root.sanitizeName(modelData.identity) : root.defaultIdentity
+      owner: String(modelData.owner || "") !== ""
+        ? String(modelData.owner) : root.defaultOwner
+      messageLimit: root.messageLimit
+      servers: modelData.servers
+      onMessageReceived: function(space, event) { window.messageArrived(space, event) }
+      onSendRejected: function(space, text, detail) { window.sendFailed(space, text, detail) }
     }
-
-    onChildrenChanged: root.refreshLinks()
   }
 
-  // Repeater items are not a bindable list, so the array the window iterates
-  // is rebuilt whenever the set of spaces changes.
+  // Instantiated objects are not a bindable list, so the array the window
+  // iterates is rebuilt whenever the set of spaces changes.
   function refreshLinks() {
     var collected = []
     for (var index = 0; index < links.count; index++) {
-      var item = links.itemAt(index)
+      var item = links.objectAt(index)
       if (item) collected.push(item)
     }
     root.linkList = collected
@@ -135,18 +131,28 @@ Item {
     return root.selectSpace(next)
   }
 
-  // ----------------------------------------------------------- shell verbs
-  function open(payload) {
+  // -------------------------------------------------------------- verbs
+  // Show the window and put the cursor in it. A second launch of an app that
+  // is already running should bring it forward, not start another one.
+  function present() {
     window.visible = true
+    root.everShown = true
     window.activateWindow()
     Qt.callLater(function() { window.focusComposer() })
+    return "ok"
   }
 
   function close() { window.visible = false }
 
-  function toggle() { opened ? close() : open("{}") }
+  // Closing the window closes the application. That is what closing a window
+  // means for an app, and there is nothing useful a hidden one could do: a
+  // window with no surface cannot be marked for attention either.
+  function windowDismissed() {
+    if (!root.everShown) return
+    Qt.quit()
+  }
 
-  // Callable over `omarchy-shell shell call clickety-clacks.subspace ...`.
+  // Callable over `qs ipc`.
   function setAttention(value) {
     var next = String(value) === "true" || value === true
     if (next === root.attention) return root.attention ? "on" : "off"
@@ -176,6 +182,7 @@ Item {
   FileView {
     id: hostnameFile
     path: "/etc/hostname"
+    Component.onCompleted: reload()
     printErrors: false
     onLoaded: {
       var value = String(text() || "").split("\n")[0].trim()
@@ -306,5 +313,20 @@ Item {
     client: root
   }
 
-  Component.onCompleted: hostnameFile.reload()
+  // One running instance answers here, so launching again presents the window
+  // that already exists rather than starting a second client — two clients
+  // sharing an identity invalidate each other's session token.
+  IpcHandler {
+    target: "app"
+
+    function ping(): string { return "ok" }
+    function present(): string { return root.present() }
+    function quit(): string { Qt.quit(); return "ok" }
+    function attention(): string { return root.testAlert() }
+    function alerts(state: string): string { return root.setAttention(state) }
+    function space(index: string): string { return root.selectSpace(Number(index)) }
+  }
+
+  Component.onCompleted: root.present()
+
 }

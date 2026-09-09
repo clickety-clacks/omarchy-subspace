@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Launch the Subspace Communicator, or bring the running one forward.
+#
+# The app is a Quickshell program in its own process. It is not part of the
+# Omarchy shell and does not need it running, but it does borrow the shell's
+# theme singletons, which is what QML_IMPORT_PATH below is for.
+set -euo pipefail
+
+app_dir=$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")/.." && pwd)
+config=$app_dir/Main.qml
+unit=subspace-communicator.service
+log_dir=${XDG_STATE_HOME:-$HOME/.local/state}/omarchy-subspace
+shell_dir=${OMARCHY_SHELL_DIR:-/usr/share/omarchy/shell}
+
+# Quickshell resolves `qs.<Module>` against the running config's own root, so
+# the shell's Commons singletons have to appear inside this directory. A link
+# rather than a copy: theming then always matches the installed Omarchy instead
+# of drifting from a vendored snapshot.
+if [[ -d $shell_dir/Commons ]]; then
+  ln -sfnT -- "$shell_dir/Commons" "$app_dir/Commons"
+elif [[ ! -e $app_dir/Commons ]]; then
+  printf '%s: no Omarchy shell Commons at %s; set OMARCHY_SHELL_DIR\n' \
+    "${0##*/}" "$shell_dir" >&2
+  exit 1
+fi
+
+call() { qs ipc --any-display -p "$config" call app "$@" >/dev/null 2>&1; }
+
+case "${1:-present}" in
+  present|"")
+    # Already up: raise the window that exists rather than starting a second
+    # client. Two clients under one identity invalidate each other's token.
+    if call ping; then
+      call present
+      exit 0
+    fi
+    ;;
+  *)
+    # Anything else is a verb for the running app: quit, attention, alerts
+    # true|false, space <n>. There is nothing to start for those.
+    exec qs ipc --any-display -p "$config" call app "$@"
+    ;;
+esac
+
+mkdir -p -- "$log_dir"
+systemctl --user stop "$unit" >/dev/null 2>&1 || true
+systemctl --user reset-failed "$unit" >/dev/null 2>&1 || true
+exec systemd-run --user --quiet --collect --unit="$unit" \
+  --description="Subspace Communicator" \
+  --property="StandardOutput=append:$log_dir/app.log" \
+  --property="StandardError=append:$log_dir/app.log" \
+  --setenv="QML_IMPORT_PATH=$shell_dir${QML_IMPORT_PATH:+:$QML_IMPORT_PATH}" \
+  qs -p "$config"

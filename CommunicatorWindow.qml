@@ -186,7 +186,7 @@ FloatingWindow {
   }
 
   onVisibleChanged: {
-    if (!visible) return
+    if (!visible) { client.windowDismissed(); return }
     win.restoreReadingPosition()
   }
 

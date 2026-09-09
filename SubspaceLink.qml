@@ -9,7 +9,7 @@ import Quickshell.Io
 Item {
   id: link
 
-  required property string pluginDir
+  required property string appDir
   required property var servers          // base URLs, tried in order
   required property string configuredName
   required property string identity
@@ -172,7 +172,7 @@ Item {
   signal sendRejected(var space, string text, string detail)
 
   readonly property var bridgeCommand: {
-    var command = ["python3", "-u", link.pluginDir + "/bridge/subspace.py",
+    var command = ["python3", "-u", link.appDir + "/bridge/subspace.py",
       "--identity", link.identity, "--owner", link.owner]
     for (var index = 0; index < link.servers.length; index++)
       command = command.concat(["--url", String(link.servers[index])])

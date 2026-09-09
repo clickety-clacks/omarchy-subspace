@@ -6,8 +6,8 @@ part of the product's behaviour, not incidental implementation details.
 ## Components
 
 ```text
-Omarchy Shell
-  └─ Communicator.qml            settings, the set of spaces, the window
+bin/subspace-communicator        launch, or present the running one
+  └─ qs -p Main.qml              its own process
        ├─ SubspaceLink.qml       one per configured space
        │    └─ bridge/subspace.py   registration, WebSocket, reconnect
        └─ CommunicatorWindow.qml the window: header, transcript, composer
@@ -15,8 +15,15 @@ Omarchy Shell
             └─ MessageRow.qml    one line of traffic
 ```
 
-`Communicator.qml` is the plugin entry point. It owns durable settings, the
-list of spaces, which one is active, and the window. It has no UI of its own.
+`Main.qml` is the application root. It owns durable settings, the list of
+spaces, which one is active, and the window. It has no UI of its own.
+
+This is an application, not part of the desktop shell. It was a shell plugin
+first, and that was the wrong shape: it lived inside `omarchy-shell`, so it
+could not appear in the launcher, could not be started or stopped on its own,
+died with the shell, and every edit needed `omarchy restart shell` because the
+shell caches compiled QML for the life of its process. None of that is true of
+a program that runs itself.
 
 `SubspaceLink.qml` is one connection: its bridge process, its identity, its
 message model, its unread count and "new" mark. Everything per-space lives
@@ -32,13 +39,17 @@ protocol. It uses the Python standard library and `openssl`, nothing else.
 
 ## Lifecycle invariants
 
-1. The manifest sets `keepLoaded`, so the plugin stays mounted after its window
-   is closed. That is what makes "close the window, keep the connection" true.
-   Removing it would silently turn every close into a disconnect.
-2. The shell reads `opened` to decide whether its toggle summons or hides. It
-   describes the window's visibility and nothing else.
-3. `close()` hides the window. It does not stop the bridge, clear the model, or
-   reset the unread count.
+1. Quickshell resolves `qs.<Module>` against the running config's own root, not
+   against `QML_IMPORT_PATH`. The Omarchy shell's `Commons` singletons
+   therefore have to appear inside this directory, and the launcher links them
+   rather than vendoring a copy, so the palette always matches the installed
+   Omarchy instead of drifting from a snapshot.
+2. Closing the window closes the application. A window with no surface cannot
+   be marked for attention either, so there is nothing useful a hidden one
+   could do.
+3. Exactly one instance runs. Launching again presents the existing window
+   through `qs ipc`; it must never start a second client, because two clients
+   sharing an identity invalidate each other's session token.
 4. One bridge process, one identity, one connection per space. Two clients
    running under one identity on the same server invalidate each other's
    session token, so the identity must stay stable per machine and per user.
@@ -46,9 +57,9 @@ protocol. It uses the Python standard library and `openssl`, nothing else.
    re-authenticates as the same agent rather than becoming a new one.
 5. The bridge is restarted on exit after a short delay. Reconnection inside a
    running bridge is the bridge's own business and does not involve QML.
-6. Spaces are only handed to the Repeater once the hostname is known. A link
-   that started with a placeholder identity would register under it, and that
-   registration is not undone by getting the right name a moment later.
+6. Spaces are only handed to the Instantiator once the hostname is known. A
+   link that started with a placeholder identity would register under it, and
+   that registration is not undone by getting the right name a moment later.
 7. The settings file is watched, so adding or removing a space takes effect
    without a restart: a removed space's link is destroyed, which stops its
    bridge.
