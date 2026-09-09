@@ -99,7 +99,7 @@ FloatingWindow {
   function clearUnreadMarkIfCaughtUp() {
     var link = client.activeLink
     if (!link || link.unreadAnchorId === "") return
-    if (!transcript.atYEnd || !win.isFocused()) return
+    if (!win.atBottom() || !win.isFocused()) return
     link.unreadAnchorId = ""
   }
 
@@ -122,6 +122,8 @@ FloatingWindow {
     // Snap, do not glide. An animation started here would still be running
     // when the message comes back from the server and the transcript grows,
     // and the two would fight over contentY for the length of the animation.
+    // stopAll() first so a gesture still holding an edge does not block the pin.
+    physics.stopAll()
     win.followTail = true
     win.keepTail()
   }
@@ -129,10 +131,34 @@ FloatingWindow {
   // Following the tail has to happen in the same frame the content grows in.
   // Deferring it by even one frame is visible: the transcript jumps up as the
   // row is added and then slides back down.
+  //
+  // It has to be positionViewAtEnd(). A ListView's contentHeight is an
+  // estimate extrapolated from the rows it has actually built, so computing
+  // the end as contentHeight - height and assigning contentY lands nowhere
+  // near it when a batch arrives at once: a 200-message replay put the last
+  // row 64,000px above the viewport and the transcript rendered empty.
+  // positionViewAtEnd walks the rows to find the real end.
+  //
+  // It is called in a short loop because building those rows revises
+  // contentHeight, which moves the end; two passes normally settle it. The
+  // re-entry guard keeps that revision from calling back in through the
+  // contentHeight handler this runs from.
+  property bool pinning: false
   function keepTail() {
-    if (!win.followTail || physics.coasting) return
-    transcript.positionViewAtEnd()
-    physics.syncRaw()
+    if (win.pinning || !win.followTail || physics.busy) return
+    win.pinning = true
+    for (var attempt = 0; attempt < 4; attempt++) {
+      transcript.positionViewAtEnd()
+      if (Math.abs(transcript.contentY - physics.maxY()) < 0.5) break
+    }
+    win.pinning = false
+  }
+
+  // Within a couple of pixels of the end counts as the end. Asking Flickable's
+  // atYEnd instead ties the decision to a fuzzy comparison that a transcript
+  // growing every second keeps flipping.
+  function atBottom() {
+    return transcript.contentY >= physics.maxY() - 2
   }
 
   function restoreReadingPosition() {
@@ -149,7 +175,7 @@ FloatingWindow {
         win.followTail = true
         transcript.positionViewAtEnd()
       }
-      physics.syncRaw()
+      physics.reset()
       composer.forceActiveFocus()
     })
   }
@@ -226,7 +252,7 @@ FloatingWindow {
     win.followTail = false
     physics.stopAll()
     transcript.positionViewAtBeginning()
-    physics.syncRaw()
+    physics.reset()
   }
 
   function jumpToLatest() {
@@ -235,7 +261,7 @@ FloatingWindow {
     if (link) { link.clearUnread(); link.unreadAnchorId = "" }
     physics.stopAll()
     transcript.positionViewAtEnd()
-    physics.syncRaw()
+    physics.reset()
   }
 
   // ------------------------------------------------------------- contents
@@ -284,123 +310,137 @@ FloatingWindow {
       anchors.top: parent.top
       height: Math.round(Style.space(42) * win.fontScale)
 
-      Row {
-        id: brand
+      // A Row lays out left to right and never shrinks, so the left half needs
+      // a clip of its own: in a narrow window it would otherwise draw straight
+      // through the controls on the right.
+      Item {
+        id: brandClip
         anchors.left: parent.left
         anchors.leftMargin: win.pad
-        anchors.verticalCenter: parent.verticalCenter
         anchors.right: headerRight.left
         anchors.rightMargin: Style.spacing.lg
-        spacing: Style.spacing.lg
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        clip: true
 
-        Rectangle {
-          width: Math.round(win.captionSize * 0.6)
-          height: width
-          radius: width / 2
-          color: win.statusColor
-          anchors.verticalCenter: parent.verticalCenter
-          opacity: client.connected ? 1 : 0.75
-          SequentialAnimation on opacity {
-            running: !client.connected
-            loops: Animation.Infinite
-            NumberAnimation { to: 0.25; duration: 900; easing.type: Easing.InOutQuad }
-            NumberAnimation { to: 0.9; duration: 900; easing.type: Easing.InOutQuad }
-          }
-        }
-
-        Text {
-          text: "SUBSPACE"
-          color: win.foreground
-          font.family: win.fontFamily
-          font.pixelSize: win.titleSize
-          font.letterSpacing: Math.max(1, Math.round(win.titleSize * 0.14))
-          font.weight: Font.DemiBold
-          anchors.verticalCenter: parent.verticalCenter
-        }
-
-        // One space needs no switcher — it just says where you are.
-        Text {
-          visible: client.linkList.length < 2
-          text: client.activeLink === null
-            ? win.statusLabel
-            : (client.activeLink.displayName
-               + (client.connected ? "" : " · " + win.statusLabel))
-          color: client.connected ? win.muted : win.statusColor
-          font.family: win.fontFamily
-          font.pixelSize: win.captionSize
-          anchors.verticalCenter: parent.verticalCenter
-        }
-
-        // More than one, and the header becomes a switcher. Each tab carries
-        // its own connection dot and its own unread count, so a quiet space
-        // and a broken one do not look the same.
         Row {
-          visible: client.linkList.length > 1
+          id: brand
+          anchors.left: parent.left
           anchors.verticalCenter: parent.verticalCenter
-          spacing: Style.spacing.sm
+          spacing: Style.spacing.lg
 
-          Repeater {
-            model: client.linkList
+          Rectangle {
+            width: Math.round(win.captionSize * 0.6)
+            height: width
+            radius: width / 2
+            color: win.statusColor
+            anchors.verticalCenter: parent.verticalCenter
+            opacity: client.connected ? 1 : 0.75
+            SequentialAnimation on opacity {
+              running: !client.connected
+              loops: Animation.Infinite
+              NumberAnimation { to: 0.25; duration: 900; easing.type: Easing.InOutQuad }
+              NumberAnimation { to: 0.9; duration: 900; easing.type: Easing.InOutQuad }
+            }
+          }
 
-            delegate: Item {
-              id: tab
-              required property var modelData
-              required property int index
-              readonly property bool current: client.activeIndex === index
+          Text {
+            text: "SUBSPACE"
+            color: win.foreground
+            font.family: win.fontFamily
+            font.pixelSize: win.titleSize
+            font.letterSpacing: Math.max(1, Math.round(win.titleSize * 0.14))
+            font.weight: Font.DemiBold
+            anchors.verticalCenter: parent.verticalCenter
+          }
 
-              width: tabRow.implicitWidth + Style.spacing.controlPaddingX * 2
-              height: Math.round(Style.spacing.controlHeight * win.fontScale)
+          // One space needs no switcher — it just says where you are.
+          Text {
+            visible: client.linkList.length < 2
+            text: client.activeLink === null
+              ? win.statusLabel
+              : (client.activeLink.displayName
+                 + (client.connected ? "" : " · " + win.statusLabel))
+            color: client.connected ? win.muted : win.statusColor
+            font.family: win.fontFamily
+            font.pixelSize: win.captionSize
+            anchors.verticalCenter: parent.verticalCenter
+            elide: Text.ElideRight
+            width: Math.max(0, Math.min(implicitWidth,
+              brandClip.width - brand.x - x))
+          }
 
-              Rectangle {
-                anchors.fill: parent
-                radius: Style.cornerRadius > 0 ? Style.cornerRadius : Style.space(4)
-                color: tab.current ? Style.selectedAccentFill
-                  : (tabArea.containsMouse ? Style.hoverFill : "transparent")
-                border.width: 1
-                border.color: tab.current ? Util.alpha(win.accent, 0.55)
-                  : (tabArea.containsMouse ? Style.hoverBorderColor : "transparent")
-              }
+          // More than one, and the header becomes a switcher. Each tab carries
+          // its own connection dot and its own unread count, so a quiet space
+          // and a broken one do not look the same.
+          Row {
+            visible: client.linkList.length > 1
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.spacing.sm
 
-              Row {
-                id: tabRow
-                anchors.centerIn: parent
-                spacing: Style.spacing.sm
+            Repeater {
+              model: client.linkList
+
+              delegate: Item {
+                id: tab
+                required property var modelData
+                required property int index
+                readonly property bool current: client.activeIndex === index
+
+                width: tabRow.implicitWidth + Style.spacing.controlPaddingX * 2
+                height: Math.round(Style.spacing.controlHeight * win.fontScale)
 
                 Rectangle {
-                  width: Math.round(win.captionSize * 0.5)
-                  height: width
-                  radius: width / 2
-                  anchors.verticalCenter: parent.verticalCenter
-                  color: tab.modelData.connected ? win.accent : win.urgent
-                  opacity: tab.modelData.connected ? 0.9 : 0.7
+                  anchors.fill: parent
+                  radius: Style.cornerRadius > 0 ? Style.cornerRadius : Style.space(4)
+                  color: tab.current ? Style.selectedAccentFill
+                    : (tabArea.containsMouse ? Style.hoverFill : "transparent")
+                  border.width: 1
+                  border.color: tab.current ? Util.alpha(win.accent, 0.55)
+                    : (tabArea.containsMouse ? Style.hoverBorderColor : "transparent")
                 }
 
-                Text {
-                  text: tab.modelData.displayName
-                  anchors.verticalCenter: parent.verticalCenter
-                  color: tab.current ? win.foreground : win.muted
-                  font.family: win.fontFamily
-                  font.pixelSize: win.captionSize
-                  font.weight: tab.current ? Font.DemiBold : Font.Normal
+                Row {
+                  id: tabRow
+                  anchors.centerIn: parent
+                  spacing: Style.spacing.sm
+
+                  Rectangle {
+                    width: Math.round(win.captionSize * 0.5)
+                    height: width
+                    radius: width / 2
+                    anchors.verticalCenter: parent.verticalCenter
+                    color: tab.modelData.connected ? win.accent : win.urgent
+                    opacity: tab.modelData.connected ? 0.9 : 0.7
+                  }
+
+                  Text {
+                    text: tab.modelData.displayName
+                    anchors.verticalCenter: parent.verticalCenter
+                    color: tab.current ? win.foreground : win.muted
+                    font.family: win.fontFamily
+                    font.pixelSize: win.captionSize
+                    font.weight: tab.current ? Font.DemiBold : Font.Normal
+                  }
+
+                  Text {
+                    visible: tab.modelData.unread > 0
+                    text: tab.modelData.unread
+                    anchors.verticalCenter: parent.verticalCenter
+                    color: win.accent
+                    font.family: win.fontFamily
+                    font.pixelSize: win.captionSize
+                    font.weight: Font.DemiBold
+                  }
                 }
 
-                Text {
-                  visible: tab.modelData.unread > 0
-                  text: tab.modelData.unread
-                  anchors.verticalCenter: parent.verticalCenter
-                  color: win.accent
-                  font.family: win.fontFamily
-                  font.pixelSize: win.captionSize
-                  font.weight: Font.DemiBold
+                MouseArea {
+                  id: tabArea
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: client.selectSpace(tab.index)
                 }
-              }
-
-              MouseArea {
-                id: tabArea
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: client.selectSpace(tab.index)
               }
             }
           }
@@ -416,7 +456,7 @@ FloatingWindow {
 
         Text {
           text: client.resolvedIdentity
-          visible: text !== ""
+          visible: text !== "" && header.width > Style.space(430) * win.fontScale
           color: win.muted
           font.family: win.fontFamily
           font.pixelSize: win.captionSize
@@ -520,13 +560,15 @@ FloatingWindow {
       flickDeceleration: 650
 
       onContentYChanged: {
-        if (atYEnd) {
+        if (win.atBottom()) {
           win.followTail = true
           win.clearUnreadMarkIfCaughtUp()
         }
       }
-      onContentHeightChanged: win.keepTail()
-      onHeightChanged: win.keepTail()
+      // A gesture holding an edge is re-anchored to where that edge now is;
+      // only a settled viewport follows the tail.
+      onContentHeightChanged: physics.overscrolled ? physics.reanchor() : win.keepTail()
+      onHeightChanged: physics.overscrolled ? physics.reanchor() : win.keepTail()
 
       delegate: MessageRow {
         width: transcript.width
@@ -551,7 +593,7 @@ FloatingWindow {
       lineImpulse: client.keyboardLineImpulse
       deceleration: client.keyboardDeceleration
       step: Math.round(Style.space(44) * win.fontScale)
-      maxOvershoot: Math.max(48, Math.min(120, Math.round(transcript.height * 0.16)))
+      maxOvershoot: Math.max(36, Math.min(72, Math.round(transcript.height * 0.1)))
       onUserScrolled: win.followTail = false
     }
 

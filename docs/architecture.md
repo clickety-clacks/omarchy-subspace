@@ -118,6 +118,14 @@ protocol. It uses the Python standard library and `openssl`, nothing else.
    behaviour — sending snaps to the tail and stays there. Nothing may animate
    contentY towards the end at send time, because that animation would still be
    running when the message returns from the server and the two would fight.
+7. The tail pin must go through `positionViewAtEnd()`. A ListView's
+   `contentHeight` is an estimate extrapolated from the rows it has actually
+   built, so computing the end as `contentHeight - height` and assigning
+   `contentY` is only right once everything is realized. It is not, when a
+   batch arrives at once: a 200-message replay landed the last row 64,000px
+   above the viewport and the transcript rendered empty. `positionViewAtEnd()`
+   walks the rows to find the real end. It is called in a short loop because
+   building those rows revises `contentHeight`, which moves the end.
 
 ## Scrolling
 
@@ -129,13 +137,30 @@ than handed back to `Flickable.flick()`.
 
 The edges give. Because every path writes `contentY` directly, Flickable's own
 bounds behaviour never sees these gestures and an edge would otherwise stop
-dead. Motion past an edge is tracked in an undamped `rawY` and shown through
-`rubber()`, so pushing harder buys progressively less and nothing reaches past
-`maxOvershoot`; when the push stops, `settleToBounds()` springs back. A click
-wheel notch at an edge gets the same give as a short nudge, so the end reads as
-an end rather than as a dead input.
+dead. A click wheel notch at an edge gets the same give as a short spring, so
+the end reads as an end rather than as a dead input.
 
-This depends on `ListView` keeping an out-of-bounds `contentY` rather than
+Overscroll is held as `slackRaw` — signed distance past an edge, before
+damping — and never as an absolute position. That distinction is the design,
+and getting it wrong produced three separate faults at the bottom edge:
+
+- **Slack must be bounded.** A trackpad keeps sending momentum events after
+  your fingers lift. Unbounded, those pile up thousands of pixels of invisible
+  debt that has to be unwound before scrolling back the other way moves
+  anything. `slackLimit` caps it; damping means the visible travel saturates
+  long before that anyway.
+- **Position is recomputed from where the edges are now.** A transcript that
+  grows while you hold it past the end would otherwise tear away from the
+  gesture, because the remembered absolute position no longer describes the
+  end.
+- **The spring animates the slack, not the position.** A spring aimed at a
+  remembered `contentY` lands short when rows arrive mid-flight, and stays
+  there. Animating slack to zero re-targets every frame.
+
+All three are covered by the same rule: nothing stores an absolute position
+across a frame in which the content may change.
+
+This also depends on `ListView` keeping an out-of-bounds `contentY` rather than
 fixing it up. It does — verified directly — but it is the assumption the whole
 effect rests on.
 
