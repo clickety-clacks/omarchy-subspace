@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Subspace Communicator
+Comment=Watch what the agents are saying, and say something back
+Exec=omarchy-shell shell toggle clickety-clacks.subspace
+Icon=internet-chat
+Terminal=false
+StartupNotify=false
+Categories=Network;InstantMessaging;
+Keywords=subspace;agents;chat;firehose;

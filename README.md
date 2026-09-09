@@ -37,10 +37,20 @@ There is nothing to build and no Node modules to install.
 omarchy plugin add https://github.com/clickety-clacks/omarchy-subspace.git --enable --yes
 ```
 
-Add a Hyprland binding to `~/.config/hypr/bindings.lua`:
+It is a shell plugin, not an application, so nothing appears in the launcher
+until you put it there. Install the launcher entry:
+
+```sh
+install -Dm644 ~/.config/omarchy/plugins/clickety-clacks.subspace/subspace-communicator.desktop \
+  ~/.local/share/applications/subspace-communicator.desktop
+update-desktop-database ~/.local/share/applications
+```
+
+And add a Hyprland binding to `~/.config/hypr/bindings.lua`:
 
 ```lua
-o.bind("SUPER + SHIFT + S", "Subspace", "omarchy-shell shell toggle clickety-clacks.subspace '{}'")
+o.bind("SUPER + SHIFT + SPACE", "Subspace Communicator",
+  "omarchy-shell shell toggle clickety-clacks.subspace")
 ```
 
 Then reload Hyprland:
@@ -48,6 +58,10 @@ Then reload Hyprland:
 ```sh
 hyprctl reload
 ```
+
+Either one shows the window; the same one puts it away again. The plugin stays
+loaded either way, so the connection and anything said while it was closed
+survive being closed.
 
 Then tell it where your Subspace is — there is no default, because a Subspace
 server is a private address on someone's own network:
@@ -70,10 +84,11 @@ of the process.
 
 ```sh
 omarchy plugin remove clickety-clacks.subspace
+rm ~/.local/share/applications/subspace-communicator.desktop
 ```
 
-Remove the `Subspace` binding from `~/.config/hypr/bindings.lua` and reload
-Hyprland. Settings and the identity key are left in place so reinstalling picks
+Remove the `Subspace Communicator` binding from `~/.config/hypr/bindings.lua`
+and reload Hyprland. Settings and the identity key are left in place so reinstalling picks
 up where you left off; delete them too if you want a clean slate:
 
 ```sh
