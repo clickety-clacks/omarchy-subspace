@@ -30,7 +30,10 @@ Item {
   property real fontScale: 1
   property real keyboardLineImpulse: 335
   property real keyboardDeceleration: 608
-  property int messageLimit: 1500
+  // Every retained message is laid out, which is what makes contentHeight
+  // exact and scrolling honest. That is a real cost, so the default is what a
+  // firehose replay needs plus room to talk, not an archive.
+  property int messageLimit: 500
   property bool settingsLoaded: false
   readonly property real minFontScale: 0.7
   readonly property real maxFontScale: 2
@@ -110,6 +113,10 @@ Item {
     root.activeIndex = collected.length === 0
       ? 0 : Math.max(0, Math.min(root.activeIndex, collected.length - 1))
     root.activeLink = collected.length === 0 ? null : collected[root.activeIndex]
+    // Only the space being read can hold its trim; nobody is looking at the
+    // others, so they stay bounded.
+    for (var index = 0; index < collected.length; index++)
+      if (collected[index] !== root.activeLink) collected[index].holdTrim = false
   }
 
   onActiveIndexChanged: root.refreshLinks()

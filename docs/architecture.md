@@ -118,14 +118,23 @@ protocol. It uses the Python standard library and `openssl`, nothing else.
    behaviour — sending snaps to the tail and stays there. Nothing may animate
    contentY towards the end at send time, because that animation would still be
    running when the message returns from the server and the two would fight.
-7. The tail pin must go through `positionViewAtEnd()`. A ListView's
-   `contentHeight` is an estimate extrapolated from the rows it has actually
-   built, so computing the end as `contentHeight - height` and assigning
-   `contentY` is only right once everything is realized. It is not, when a
-   batch arrives at once: a 200-message replay landed the last row 64,000px
-   above the viewport and the transcript rendered empty. `positionViewAtEnd()`
-   walks the rows to find the real end. It is called in a short loop because
-   building those rows revises `contentHeight`, which moves the end.
+7. The transcript is a `Flickable` holding a `Column` of every message, not a
+   `ListView`. This is not a style preference. The physics drives `contentY`
+   directly, which is only meaningful when `contentHeight` is measured; a
+   `ListView` extrapolates `contentHeight` from the rows it has actually
+   built, and with wrapped text of wildly differing heights that estimate is
+   wrong by orders of magnitude. Two separate faults came from it: a
+   200-message replay put the last row 64,000px above the viewport, and
+   ordinary scrolling landed in estimated void with a blank viewport and a
+   scroll indicator pointing at a position that did not exist. Laying every
+   message out costs memory and startup time, bounded by `messageLimit`, and
+   buys an exact `contentHeight`. Do not reintroduce a view that virtualizes
+   rows without also replacing the way position is computed.
+8. Dropping the oldest message shifts everything below it up by that row's
+   height. That is invisible at the tail, where the view is re-pinned to the
+   end, and a jump out from under the reader anywhere else — so the active
+   space holds its trim while the reader is above the tail, and catches up
+   when they return.
 
 ## Scrolling
 

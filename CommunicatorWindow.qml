@@ -132,26 +132,23 @@ FloatingWindow {
   // Deferring it by even one frame is visible: the transcript jumps up as the
   // row is added and then slides back down.
   //
-  // It has to be positionViewAtEnd(). A ListView's contentHeight is an
-  // estimate extrapolated from the rows it has actually built, so computing
-  // the end as contentHeight - height and assigning contentY lands nowhere
-  // near it when a batch arrives at once: a 200-message replay put the last
-  // row 64,000px above the viewport and the transcript rendered empty.
-  // positionViewAtEnd walks the rows to find the real end.
-  //
-  // It is called in a short loop because building those rows revises
-  // contentHeight, which moves the end; two passes normally settle it. The
-  // re-entry guard keeps that revision from calling back in through the
-  // contentHeight handler this runs from.
+  // Every message is laid out, so contentHeight is the real height and the end
+  // is simply that minus the viewport. The re-entry guard is because this runs
+  // from the contentHeight handler.
   property bool pinning: false
   function keepTail() {
     if (win.pinning || !win.followTail || physics.busy) return
     win.pinning = true
-    for (var attempt = 0; attempt < 4; attempt++) {
-      transcript.positionViewAtEnd()
-      if (Math.abs(transcript.contentY - physics.maxY()) < 0.5) break
-    }
+    transcript.contentY = physics.maxY()
     win.pinning = false
+  }
+
+  // Put a message's own top at the top of the viewport.
+  function positionAtMessage(index) {
+    var item = messageRepeater.itemAt(index)
+    if (!item) return false
+    transcript.contentY = Math.max(0, Math.min(physics.maxY(), item.y))
+    return true
   }
 
   // Within a couple of pixels of the end counts as the end. Asking Flickable's
@@ -166,16 +163,11 @@ FloatingWindow {
     var resume = link ? link.indexOfMessage(link.unreadAnchorId) : -1
     if (link) link.clearUnread()
     Qt.callLater(function() {
-      if (resume >= 0) {
-        // Coming back to a backlog should land where you stopped reading, not
-        // at the bottom past everything you missed.
-        win.followTail = false
-        transcript.positionViewAtIndex(resume, ListView.Beginning)
-      } else {
-        win.followTail = true
-        transcript.positionViewAtEnd()
-      }
-      physics.reset()
+      physics.stopAll()
+      // Coming back to a backlog should land where you stopped reading, not at
+      // the bottom past everything you missed.
+      win.followTail = resume < 0 || !win.positionAtMessage(resume)
+      if (win.followTail) transcript.contentY = physics.maxY()
       composer.forceActiveFocus()
     })
   }
@@ -243,6 +235,15 @@ FloatingWindow {
     return false
   }
 
+  // Trimming the buffer is only safe where it cannot be seen: at the tail,
+  // where the view is re-pinned to the end anyway.
+  onFollowTailChanged: {
+    var link = client.activeLink
+    if (!link) return
+    link.holdTrim = !win.followTail
+    if (win.followTail) link.trimNow()
+  }
+
   function scrollImpulse(direction, page) {
     win.followTail = false
     physics.keyImpulse(direction, page)
@@ -251,8 +252,7 @@ FloatingWindow {
   function jumpToStart() {
     win.followTail = false
     physics.stopAll()
-    transcript.positionViewAtBeginning()
-    physics.reset()
+    transcript.contentY = 0
   }
 
   function jumpToLatest() {
@@ -260,8 +260,7 @@ FloatingWindow {
     win.followTail = true
     if (link) { link.clearUnread(); link.unreadAnchorId = "" }
     physics.stopAll()
-    transcript.positionViewAtEnd()
-    physics.reset()
+    transcript.contentY = physics.maxY()
   }
 
   // ------------------------------------------------------------- contents
@@ -538,7 +537,16 @@ FloatingWindow {
     }
 
     // ---------------------------------------------------------- transcript
-    ListView {
+    //
+    // A Flickable holding a Column of every message, not a ListView. The
+    // physics here drives contentY directly, and that is only meaningful when
+    // contentHeight is measured. A ListView extrapolates contentHeight from
+    // the rows it has actually built, so with wrapped text of wildly differing
+    // heights its idea of the end is fiction: scrolling lands in estimated
+    // void with nothing drawn there, and the scroll indicator points at a
+    // position that does not exist. Laying every message out costs memory and
+    // startup time, bounded by messageLimit, and buys an exact contentHeight.
+    Flickable {
       id: transcript
       anchors.top: headerRule.bottom
       anchors.left: parent.left
@@ -549,9 +557,9 @@ FloatingWindow {
       anchors.topMargin: Style.spacing.lg
       anchors.bottomMargin: Style.spacing.lg
       clip: true
-      model: client.messageModel
-      spacing: Style.space(6)
-      cacheBuffer: 800
+      contentWidth: width
+      contentHeight: stack.height
+      interactive: contentHeight > height
       // Our own gestures write contentY directly and provide their own give at
       // the edges, so Flickable is told to leave the bounds alone.
       boundsBehavior: Flickable.StopAtBounds
@@ -570,9 +578,20 @@ FloatingWindow {
       onContentHeightChanged: physics.overscrolled ? physics.reanchor() : win.keepTail()
       onHeightChanged: physics.overscrolled ? physics.reanchor() : win.keepTail()
 
-      delegate: MessageRow {
+      Column {
+        id: stack
         width: transcript.width
-        host: win
+        spacing: Style.space(6)
+
+        Repeater {
+          id: messageRepeater
+          model: client.messageModel
+
+          delegate: MessageRow {
+            width: stack.width
+            host: win
+          }
+        }
       }
 
       WheelHandler {
@@ -584,7 +603,7 @@ FloatingWindow {
       }
     }
 
-    // Kept outside the ListView on purpose: a Flickable's plain children are
+    // Kept outside the Flickable on purpose: a Flickable's plain children are
     // parented into the scrolling content item, so anything anchored to
     // "parent" in there quietly scrolls away with the transcript.
     ScrollPhysics {
@@ -601,7 +620,7 @@ FloatingWindow {
     // client unless the client says which one it is.
     Text {
       anchors.centerIn: transcript
-      visible: transcript.count === 0
+      visible: messageRepeater.count === 0
       width: transcript.width * 0.75
       horizontalAlignment: Text.AlignHCenter
       wrapMode: Text.WordWrap
@@ -639,7 +658,7 @@ FloatingWindow {
       anchors.bottom: transcript.bottom
       anchors.bottomMargin: Style.spacing.md
       visible: opacity > 0.01
-      opacity: (!win.followTail && transcript.count > 0) ? 1 : 0
+      opacity: (!win.followTail && messageRepeater.count > 0) ? 1 : 0
       Behavior on opacity { NumberAnimation { duration: 160 } }
       width: jumpLabel.implicitWidth + Style.spacing.rowPaddingX * 2
       height: Math.round(Style.spacing.controlHeight * win.fontScale)

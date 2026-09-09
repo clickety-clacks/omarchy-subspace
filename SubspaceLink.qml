@@ -24,6 +24,11 @@ Item {
   property int unread: 0
   property string unreadAnchorId: ""
   property int sendSequence: 0
+  // Set while the reader is somewhere above the tail of this space. Dropping
+  // the oldest message shifts everything below it up by that row's height, and
+  // doing that under someone reading history jumps the page out from under
+  // them. Growth is bounded again the moment they return to the bottom.
+  property bool holdTrim: false
   property var pendingSends: ({})
 
   readonly property bool connected: connectionState === "connected"
@@ -113,7 +118,12 @@ Item {
       grouped: previous !== null && previous.agentName === name
         && minutesBetween(previous.timestamp, timestamp) < 5
     })
-    while (messages.count > link.messageLimit) messages.remove(0, 1)
+    if (!link.holdTrim) link.trimNow()
+  }
+
+  function trimNow() {
+    var excess = messages.count - link.messageLimit
+    if (excess > 0) messages.remove(0, excess)
   }
 
   function minutesBetween(before, after) {
