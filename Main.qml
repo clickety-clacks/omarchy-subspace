@@ -74,38 +74,82 @@ ShellRoot {
   readonly property int unread: activeLink ? activeLink.unread : 0
   readonly property string unreadAnchorId: activeLink ? activeLink.unreadAnchorId : ""
 
-  // Instantiator rather than Repeater: these are not visual, and an
-  // application root is not a scene to parent them into.
-  Instantiator {
-    id: links
-    model: root.spaceList
-    onObjectAdded: root.refreshLinks()
-    onObjectRemoved: root.refreshLinks()
+  // Links are managed by hand rather than by a model delegate, because a model
+  // reset destroys and recreates every delegate: adding one Subspace would
+  // drop and re-register every other connection. Each space is keyed by what
+  // actually determines its connection, so an edit only disturbs the space
+  // that was edited — and renaming one, which changes nothing about the
+  // connection, disturbs nothing at all.
+  Component { id: linkComponent; SubspaceLink {} }
 
-    delegate: SubspaceLink {
-      required property var modelData
-      appDir: root.appDir
-      configuredName: String(modelData.name || "")
-      identity: String(modelData.identity || "") !== ""
-        ? root.sanitizeName(modelData.identity) : root.defaultIdentity
-      owner: String(modelData.owner || "") !== ""
-        ? String(modelData.owner) : root.defaultOwner
-      messageLimit: root.messageLimit
-      servers: modelData.servers
-      onMessageReceived: function(space, event) { window.messageArrived(space, event) }
-      onSendRejected: function(space, text, detail) { window.sendFailed(space, text, detail) }
-    }
+  property var linkByKey: ({})
+
+  function spaceKey(space) {
+    var identity = String(space.identity || "") !== ""
+      ? root.sanitizeName(space.identity) : root.defaultIdentity
+    var owner = String(space.owner || "") !== "" ? String(space.owner) : root.defaultOwner
+    // The name is deliberately absent: it is a label, not a connection.
+    return [identity, owner, space.servers.join("\u0001")].join("\u0000")
   }
 
-  // Instantiated objects are not a bindable list, so the array the window
-  // iterates is rebuilt whenever the set of spaces changes.
-  function refreshLinks() {
+  function syncLinks() {
+    if (!root.hostnameResolved || !root.settingsResolved) return
+    var wanted = root.pendingSpaces
+    var next = ({})
+    var seen = ({})
     var collected = []
-    for (var index = 0; index < links.count; index++) {
-      var item = links.objectAt(index)
-      if (item) collected.push(item)
+
+    for (var index = 0; index < wanted.length; index++) {
+      var space = wanted[index]
+      var key = root.spaceKey(space)
+      // Two spaces can legitimately be the same server under the same name;
+      // they still need one link each.
+      var repeat = seen[key] || 0
+      seen[key] = repeat + 1
+      if (repeat > 0) key = key + "#" + repeat
+
+      var link = root.linkByKey[key]
+      if (link) {
+        // Everything the key does not cover is cosmetic and applies in place.
+        link.configuredName = String(space.name || "")
+        link.messageLimit = root.messageLimit
+      } else {
+        link = linkComponent.createObject(root, {
+          appDir: root.appDir,
+          servers: space.servers,
+          configuredName: String(space.name || ""),
+          identity: String(space.identity || "") !== ""
+            ? root.sanitizeName(space.identity) : root.defaultIdentity,
+          owner: String(space.owner || "") !== ""
+            ? String(space.owner) : root.defaultOwner,
+          messageLimit: root.messageLimit
+        })
+        if (!link) continue
+        link.messageReceived.connect(root.onSpaceMessage)
+        link.sendRejected.connect(root.onSpaceSendRejected)
+      }
+      next[key] = link
+      collected.push(link)
     }
+
+    for (var stale in root.linkByKey) {
+      if (next[stale]) continue
+      var going = root.linkByKey[stale]
+      going.stop()
+      going.destroy()
+    }
+
+    root.linkByKey = next
+    root.spaceList = wanted
     root.linkList = collected
+    root.refreshActive()
+  }
+
+  function onSpaceMessage(space, event) { window.messageArrived(space, event) }
+  function onSpaceSendRejected(space, text, detail) { window.sendFailed(space, text, detail) }
+
+  function refreshActive() {
+    var collected = root.linkList
     root.activeIndex = collected.length === 0
       ? 0 : Math.max(0, Math.min(root.activeIndex, collected.length - 1))
     root.activeLink = collected.length === 0 ? null : collected[root.activeIndex]
@@ -115,7 +159,7 @@ ShellRoot {
       if (collected[index] !== root.activeLink) collected[index].holdTrim = false
   }
 
-  onActiveIndexChanged: root.refreshLinks()
+  onActiveIndexChanged: root.refreshActive()
 
   function selectSpace(index) {
     var next = Number(index)
@@ -210,31 +254,8 @@ ShellRoot {
   property var pendingSpaces: []
   onHostnameResolvedChanged: root.applySpaces()
 
-  function applySpaces() {
-    if (!root.hostnameResolved || !root.settingsResolved) return
-    // Reassigning the model rebuilds every link, which drops and re-registers
-    // every connection. The settings file is watched and this app writes to it
-    // for unrelated reasons — a font-size change must not reconnect Subspace.
-    if (root.sameSpaces(root.spaceList, root.pendingSpaces)) return
-    root.spaceList = root.pendingSpaces
-    Qt.callLater(root.refreshLinks)
-  }
+  function applySpaces() { root.syncLinks() }
 
-  function sameSpaces(left, right) {
-    if (!Array.isArray(left) || !Array.isArray(right)) return false
-    if (left.length !== right.length) return false
-    for (var index = 0; index < left.length; index++) {
-      var a = left[index]
-      var b = right[index]
-      if (String(a.name) !== String(b.name)) return false
-      if (String(a.identity) !== String(b.identity)) return false
-      if (String(a.owner) !== String(b.owner)) return false
-      if (a.servers.length !== b.servers.length) return false
-      for (var url = 0; url < a.servers.length; url++)
-        if (String(a.servers[url]) !== String(b.servers[url])) return false
-    }
-    return true
-  }
 
   function normalizeSpaces(parsed) {
     var out = []

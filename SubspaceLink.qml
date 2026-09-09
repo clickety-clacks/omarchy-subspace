@@ -6,7 +6,10 @@ import Quickshell.Io
 // message model, and its unread state. Everything that is per-space lives
 // here, so adding a second Subspace is adding a second one of these rather
 // than threading a space id through the client.
-Item {
+//
+// A QtObject, not an Item: there is nothing to draw, and these are created
+// against the application root, which is not a scene to put an Item in.
+QtObject {
   id: link
 
   required property string appDir
@@ -45,26 +48,26 @@ Item {
 
   signal messageReceived(var space, var event)
 
-  ListModel { id: messages }
+  property ListModel messages: ListModel {}
 
   function start() {
-    if (bridge.running) return
+    if (link.bridge.running) return
     if (!servers || servers.length === 0) {
       link.connectionState = "unconfigured"
       return
     }
-    bridge.running = true
+    link.bridge.running = true
   }
 
   function stop() {
-    if (!bridge.running) return
-    bridge.write(JSON.stringify({ type: "quit" }) + "\n")
-    bridge.running = false
+    if (!link.bridge.running) return
+    link.bridge.write(JSON.stringify({ type: "quit" }) + "\n")
+    link.bridge.running = false
   }
 
   function reconnect() {
-    bridge.running = false
-    restartTimer.restart()
+    link.bridge.running = false
+    link.restartTimer.restart()
   }
 
   function clearUnread() { link.unread = 0 }
@@ -83,14 +86,14 @@ Item {
 
   function send(text) {
     var body = String(text || "").replace(/\s+$/, "")
-    if (body === "" || !bridge.running) return false
+    if (body === "" || !link.bridge.running) return false
     link.sendSequence += 1
     var ref = link.sendSequence
     var tracked = ({})
     for (var key in link.pendingSends) tracked[key] = link.pendingSends[key]
     tracked[String(ref)] = body
     link.pendingSends = tracked
-    bridge.write(JSON.stringify({ type: "send", text: body, ref: ref }) + "\n")
+    link.bridge.write(JSON.stringify({ type: "send", text: body, ref: ref }) + "\n")
     return true
   }
 
@@ -179,8 +182,7 @@ Item {
     return command
   }
 
-  Process {
-    id: bridge
+  property Process bridge: Process {
     command: link.bridgeCommand
     running: false
     stdinEnabled: true
@@ -193,12 +195,11 @@ Item {
     onExited: function(code) {
       link.connectionState = "stopped"
       link.connectionDetail = "The Subspace bridge exited (" + code + ")."
-      restartTimer.restart()
+      link.restartTimer.restart()
     }
   }
 
-  Timer {
-    id: restartTimer
+  property Timer restartTimer: Timer {
     interval: 2000
     repeat: false
     onTriggered: link.start()

@@ -28,8 +28,10 @@ a program that runs itself.
 `SubspaceLink.qml` is one connection: its bridge process, its identity, its
 message model, its unread count and "new" mark. Everything per-space lives
 here, so a second Subspace is a second one of these rather than a space id
-threaded through the client. Its signals carry the link itself, because a
-Repeater delegate has no stable id to refer back to.
+threaded through the client. Its signals carry the link itself, because the
+links are created dynamically and have no id to refer back to. It is a
+`QtObject`: there is nothing to draw, and an Item created against the
+application root has no scene to live in.
 
 `CommunicatorWindow.qml` owns presentation and input. It never talks to the
 network; it calls `client.send()` and reacts to what the client hands it.
@@ -108,11 +110,19 @@ protocol. It uses the Python standard library and `openssl`, nothing else.
 4. The switcher's rows bind to each link's own properties. Rebuilding the array
    behind them to recompute a total would recreate every row on every incoming
    message.
-5. Assigning `spaceList` rebuilds every link, which drops and re-registers
-   every connection. The settings file is watched and this app writes to it for
-   unrelated reasons, so `applySpaces()` compares before assigning: a font-size
-   change must not reconnect Subspace. Editing the spaces themselves does
-   reconnect them, which is the honest cost of the model changing.
+5. Links are managed by hand, not by a model delegate. A model reset destroys
+   and recreates every delegate, so adding one Subspace would drop and
+   re-register every other connection. Each space is keyed by identity, owner
+   and server list — what actually determines the connection — so `syncLinks()`
+   reuses the link for anything whose key is unchanged, creates one for a key
+   it has not seen, and destroys the links whose keys have gone.
+
+   The name is deliberately absent from the key: it is a label, not a
+   connection, and applies in place. Renaming a Subspace therefore reconnects
+   nothing, and editing one's address reconnects only that one.
+
+   This also makes the sync idempotent, which is what lets it run on every
+   settings write without a comparison guard.
 6. Settings are written atomically — temp file plus rename — so this app's own
    write does not reliably come back through its own watcher. Anything that
    writes the file applies the result directly rather than waiting for a
