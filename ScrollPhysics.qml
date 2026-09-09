@@ -49,7 +49,7 @@ Item {
   readonly property real slackLimit: Math.max(1, maxOvershoot) * 2.5
   readonly property bool overscrolled: slackRaw !== 0
   readonly property bool coasting: keyboardCoast.running || trackpadCoast.running
-    || bounce.running || nudge.running
+    || verticalScroll.running || bounce.running || nudge.running
   // True whenever the physics owns the viewport and nothing else should move it.
   readonly property bool busy: coasting || overscrolled
 
@@ -114,8 +114,14 @@ Item {
       return
     }
     var target = surface.contentY + delta
-    if (target < 0) { physics.slackRaw = target; return }
-    if (target > limit) { physics.slackRaw = target - limit; return }
+    if (target < 0) {
+      physics.slackRaw = Math.max(-physics.slackLimit, target)
+      return
+    }
+    if (target > limit) {
+      physics.slackRaw = Math.min(physics.slackLimit, target - limit)
+      return
+    }
     surface.contentY = target
   }
 
@@ -134,11 +140,22 @@ Item {
     keyboardVelocityY = 0
     keyboardCoast.stop()
     trackpadCoast.stop()
+    trackpadCoast.clippedExcess = 0
     verticalScroll.stop()
     bounce.stop()
     nudge.stop()
+    physics.forgetWheelGesture()
     if (surface) surface.cancelFlick()
     physics.reset()
+  }
+
+  // A trackpad stream is only known to have ended by a pause, so a release is
+  // always pending. Anything that takes the viewport somewhere else has to
+  // forget it, or it fires afterwards and coasts away from wherever it landed.
+  function forgetWheelGesture() {
+    coastTimer.stop()
+    wheelState.lastSampleTime = 0
+    wheelState.releaseVelocityY = 0
   }
 
   // Steps accumulate onto a running animation's destination. Measuring from
@@ -180,8 +197,10 @@ Item {
     verticalScroll.stop()
     surface.cancelFlick()
     trackpadCoast.stop()
+    trackpadCoast.clippedExcess = 0
     bounce.stop()
     nudge.stop()
+    physics.forgetWheelGesture()
     var impulse = page ? physics.pageImpulse : physics.lineImpulse
     keyboardVelocityY = Math.max(-surface.maximumFlickVelocity,
       Math.min(surface.maximumFlickVelocity, keyboardVelocityY + direction * impulse))
@@ -214,9 +233,12 @@ Item {
     // it crawling there.
     trackpadCoast.duration = Math.max(120,
       Math.round(full * (distance > 0 ? Math.min(1, travel / distance) : 0)))
-    // Whatever the edge absorbed comes back as the bounce.
-    trackpadCoast.spill = excess > 1
-      ? direction * Math.min(physics.maxOvershoot * 1.1, excess * 0.35) : 0
+    // How much the edge absorbed. Whether it is still an edge by the time the
+    // coast arrives is decided then, not now: the transcript grows, and a
+    // bounce owed to an edge that has since moved away would jump the reader
+    // across every message that arrived in between.
+    trackpadCoast.clippedExcess = excess > 1 ? excess : 0
+    trackpadCoast.edgeSign = excess > 1 ? direction : 0
     trackpadCoast.start()
   }
 
@@ -253,8 +275,12 @@ Item {
     wheelState.releaseVelocityY = wheelState.releaseVelocityY * 0.55 + dy * 1000 / elapsed * 0.45
     wheelState.lastSampleTime = now
 
-    physics.driveBy(-dy)
+    // userScrolled() first: it means "this was deliberate", and the move that
+    // follows decides where that left us. The other order lets a gesture that
+    // arrives at the bottom end with following switched off, and nothing
+    // afterwards ever turns it back on.
     physics.userScrolled()
+    physics.driveBy(-dy)
     coastTimer.restart()
   }
 
@@ -316,14 +342,23 @@ Item {
 
   NumberAnimation {
     id: trackpadCoast
-    property real spill: 0
+    property real clippedExcess: 0
+    property real edgeSign: 0
     target: physics.surface
     property: "contentY"
     easing.type: Easing.OutQuint
     onFinished: {
-      var carried = trackpadCoast.spill
-      trackpadCoast.spill = 0
-      if (carried !== 0) physics.spring(carried)
+      var excess = trackpadCoast.clippedExcess
+      var sign = trackpadCoast.edgeSign
+      trackpadCoast.clippedExcess = 0
+      trackpadCoast.edgeSign = 0
+      if (excess <= 0 || sign === 0 || !physics.surface) return
+      var limit = physics.maxY()
+      var stillAgainstIt = sign > 0
+        ? physics.surface.contentY >= limit - 0.5
+        : physics.surface.contentY <= 0.5
+      if (!stillAgainstIt) return
+      physics.spring(sign * Math.min(physics.maxOvershoot * 1.1, excess * 0.35))
     }
   }
 

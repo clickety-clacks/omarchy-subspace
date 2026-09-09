@@ -137,7 +137,8 @@ FloatingWindow {
   // from the contentHeight handler.
   property bool pinning: false
   function keepTail() {
-    if (win.pinning || !win.followTail || physics.busy) return
+    if (win.pinning || !win.followTail || physics.busy
+        || transcript.dragging || transcript.flicking) return
     win.pinning = true
     transcript.contentY = physics.maxY()
     win.pinning = false
@@ -160,14 +161,20 @@ FloatingWindow {
 
   function restoreReadingPosition() {
     var link = client.activeLink
-    var resume = link ? link.indexOfMessage(link.unreadAnchorId) : -1
+    // Carry the message's identity, not its row number. Rows shift when the
+    // buffer trims, and the active space can change outright, between
+    // scheduling this and running it.
+    var anchor = link ? link.unreadAnchorId : ""
     if (link) link.clearUnread()
     Qt.callLater(function() {
+      if (link !== client.activeLink) return
       physics.stopAll()
       // Coming back to a backlog should land where you stopped reading, not at
       // the bottom past everything you missed.
+      var resume = link ? link.indexOfMessage(anchor) : -1
       win.followTail = resume < 0 || !win.positionAtMessage(resume)
       if (win.followTail) transcript.contentY = physics.maxY()
+      win.syncTrimHold()
       composer.forceActiveFocus()
     })
   }
@@ -236,13 +243,18 @@ FloatingWindow {
   }
 
   // Trimming the buffer is only safe where it cannot be seen: at the tail,
-  // where the view is re-pinned to the end anyway.
-  onFollowTailChanged: {
+  // where the view is re-pinned to the end anyway. Called on every transition
+  // and again after anything that changes which space is on screen, because
+  // arriving at the same value of followTail emits no change signal and would
+  // leave the new space trimming under a reader.
+  function syncTrimHold() {
     var link = client.activeLink
     if (!link) return
     link.holdTrim = !win.followTail
     if (win.followTail) link.trimNow()
   }
+
+  onFollowTailChanged: win.syncTrimHold()
 
   function scrollImpulse(direction, page) {
     win.followTail = false
@@ -250,9 +262,11 @@ FloatingWindow {
   }
 
   function jumpToStart() {
-    win.followTail = false
+    // stopAll() springs any slack out, which lands on an edge and can re-arm
+    // following on the way past. followTail is settled last, after the move.
     physics.stopAll()
     transcript.contentY = 0
+    win.followTail = false
   }
 
   function jumpToLatest() {
@@ -577,6 +591,10 @@ FloatingWindow {
       // only a settled viewport follows the tail.
       onContentHeightChanged: physics.overscrolled ? physics.reanchor() : win.keepTail()
       onHeightChanged: physics.overscrolled ? physics.reanchor() : win.keepTail()
+      // Flickable's own drag and flick move contentY without going through the
+      // physics, so they have to say so themselves or the tail pin fights them.
+      onDraggingChanged: if (dragging) win.followTail = false
+      onFlickStarted: win.followTail = false
 
       Column {
         id: stack

@@ -173,6 +173,33 @@ This also depends on `ListView` keeping an out-of-bounds `contentY` rather than
 fixing it up. It does — verified directly — but it is the assumption the whole
 effect rests on.
 
+## Who may move the viewport
+
+Every fault in this file's history has been two things writing `contentY` in
+the same frame, or one thing writing it from a value that was true in an
+earlier frame. The rules that keep that from recurring:
+
+1. Anything that moves the viewport must be visible in `physics.busy`, and
+   `keepTail()` must refuse to run while it is set. That includes the
+   click-wheel step animation and Flickable's own drag and flick, which move
+   `contentY` without going through the physics at all and therefore have to
+   announce themselves.
+2. A deliberate scroll says so *before* it moves, not after. `userScrolled()`
+   means "this was intentional"; the move that follows is what decides whether
+   it ended at the tail. The other order lets a gesture that arrives at the
+   bottom finish with following switched off, and nothing afterwards turns it
+   back on.
+3. Nothing may act on a position, row index, or edge collision computed in an
+   earlier frame without re-checking it against the present. A trackpad coast
+   decides whether it hit an edge when it arrives, not when it starts. A
+   restored reading position carries the message's identity, not its row.
+4. A gesture's pending release is state. Anything that takes the viewport
+   somewhere else has to cancel it, or it fires afterwards and coasts away
+   from wherever the viewport was just put.
+5. State that gates behaviour must be set from the current value, not only on
+   its transitions. `holdTrim` is re-synced after anything that changes which
+   space is on screen, because arriving at the same value emits no signal.
+
 ## Input routing
 
 A focused `TextEdit` claims navigation keys before a window `Shortcut` sees
