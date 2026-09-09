@@ -212,8 +212,28 @@ ShellRoot {
 
   function applySpaces() {
     if (!root.hostnameResolved || !root.settingsResolved) return
+    // Reassigning the model rebuilds every link, which drops and re-registers
+    // every connection. The settings file is watched and this app writes to it
+    // for unrelated reasons — a font-size change must not reconnect Subspace.
+    if (root.sameSpaces(root.spaceList, root.pendingSpaces)) return
     root.spaceList = root.pendingSpaces
     Qt.callLater(root.refreshLinks)
+  }
+
+  function sameSpaces(left, right) {
+    if (!Array.isArray(left) || !Array.isArray(right)) return false
+    if (left.length !== right.length) return false
+    for (var index = 0; index < left.length; index++) {
+      var a = left[index]
+      var b = right[index]
+      if (String(a.name) !== String(b.name)) return false
+      if (String(a.identity) !== String(b.identity)) return false
+      if (String(a.owner) !== String(b.owner)) return false
+      if (a.servers.length !== b.servers.length) return false
+      for (var url = 0; url < a.servers.length; url++)
+        if (String(a.servers[url]) !== String(b.servers[url])) return false
+    }
+    return true
   }
 
   function normalizeSpaces(parsed) {
@@ -279,6 +299,77 @@ ShellRoot {
     root.applySpaces()
   }
 
+  // ------------------------------------------------------- editing spaces
+  function readSettings() {
+    var current = {}
+    try { current = JSON.parse(settingsFile.text() || "{}") } catch (error) { current = {} }
+    return (current && typeof current === "object") ? current : ({})
+  }
+
+  // The configured list, in the file's own shape, so an edit round-trips
+  // without rewriting entries the UI does not know about.
+  function configuredSpaces() { return root.normalizeSpaces(root.readSettings()) }
+
+  function persistSpaces(list) {
+    var current = root.readSettings()
+    current.spaces = list
+    // The single-space shape is what this key supersedes; leaving it would
+    // silently win on the next load.
+    delete current.servers
+    delete current.identity
+    delete current.owner
+    var text = JSON.stringify(current, null, 2) + "\n"
+    settingsFile.setText(text)
+    // Writes are atomic — temp file plus rename — so this app's own write does
+    // not reliably come back through its own watcher. Apply it directly rather
+    // than waiting for a notification that may never arrive.
+    root.loadSettings(text)
+  }
+
+  // Accepts one URL or several separated by commas or whitespace. Several are
+  // fallbacks for one space, tried in order — not several spaces.
+  function parseServers(text) {
+    var parts = String(text || "").split(/[\s,]+/)
+    var urls = []
+    for (var index = 0; index < parts.length; index++) {
+      var url = parts[index].trim().replace(/\/+$/, "")
+      if (url === "") continue
+      if (!/^https?:\/\/[^\s\/]+/.test(url)) return null
+      urls.push(url)
+    }
+    return urls.length > 0 ? urls : null
+  }
+
+  function addSpace(name, serversText) {
+    var urls = root.parseServers(serversText)
+    if (!urls) return false
+    var list = root.configuredSpaces()
+    list.push({ name: String(name || "").trim(), servers: urls, identity: "", owner: "" })
+    root.persistSpaces(list)
+    root.activeIndex = list.length - 1
+    return true
+  }
+
+  function updateSpace(index, name, serversText) {
+    var urls = root.parseServers(serversText)
+    if (!urls) return false
+    var list = root.configuredSpaces()
+    if (index < 0 || index >= list.length) return false
+    list[index].name = String(name || "").trim()
+    list[index].servers = urls
+    root.persistSpaces(list)
+    return true
+  }
+
+  function removeSpace(index) {
+    var list = root.configuredSpaces()
+    if (index < 0 || index >= list.length) return false
+    list.splice(index, 1)
+    root.persistSpaces(list)
+    if (root.activeIndex >= list.length) root.activeIndex = Math.max(0, list.length - 1)
+    return true
+  }
+
   function saveSettings() {
     if (!root.settingsLoaded) return
     // Merge into whatever is on disk: this file is small, but it is a user's
@@ -328,6 +419,13 @@ ShellRoot {
     function attention(): string { return root.testAlert() }
     function alerts(state: string): string { return root.setAttention(state) }
     function space(index: string): string { return root.selectSpace(Number(index)) }
+    function spaces(): string { return window.openSwitcher() }
+    function add(name: string, servers: string): string {
+      return root.addSpace(name, servers) ? "ok" : "invalid server address"
+    }
+    function remove(index: string): string {
+      return root.removeSpace(Number(index)) ? "ok" : "no such space"
+    }
   }
 
   Component.onCompleted: root.present()

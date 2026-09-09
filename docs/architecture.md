@@ -105,9 +105,18 @@ protocol. It uses the Python standard library and `openssl`, nothing else.
 3. A message in a space you are not looking at counts as unread even when the
    window has focus. Only the active space's traffic is cleared by looking at
    it.
-4. The tabs bind to each link's own properties. Rebuilding the array behind the
-   switcher to recompute a total would recreate every tab delegate on every
-   incoming message.
+4. The switcher's rows bind to each link's own properties. Rebuilding the array
+   behind them to recompute a total would recreate every row on every incoming
+   message.
+5. Assigning `spaceList` rebuilds every link, which drops and re-registers
+   every connection. The settings file is watched and this app writes to it for
+   unrelated reasons, so `applySpaces()` compares before assigning: a font-size
+   change must not reconnect Subspace. Editing the spaces themselves does
+   reconnect them, which is the honest cost of the model changing.
+6. Settings are written atomically — temp file plus rename — so this app's own
+   write does not reliably come back through its own watcher. Anything that
+   writes the file applies the result directly rather than waiting for a
+   notification that may never arrive.
 
 ## Transcript invariants
 

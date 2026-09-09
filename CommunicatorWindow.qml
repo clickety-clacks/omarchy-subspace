@@ -50,6 +50,13 @@ FloatingWindow {
   property string composerError: ""
   readonly property string unreadAnchorId: client.unreadAnchorId
 
+  readonly property int unreadElsewhere: {
+    var total = 0
+    for (var index = 0; index < client.linkList.length; index++)
+      if (index !== client.activeIndex) total += client.linkList[index].unread
+    return total
+  }
+
   // FloatingWindow is a Quickshell wrapper, not a QWindow. The standard
   // QtQuick attached property gives us the actual native window, which is the
   // only object that carries `active` and `alert`.
@@ -69,6 +76,8 @@ FloatingWindow {
   }
 
   function focusComposer() { composer.forceActiveFocus() }
+
+  function openSwitcher() { switcher.toggle(); return switcher.open ? "open" : "closed" }
 
   function messageArrived(space, event) {
     // Replayed history is what was already said before this client attached.
@@ -194,6 +203,9 @@ FloatingWindow {
   // A focused TextEdit claims navigation keys before a window Shortcut can see
   // them, so every text surface routes its keys through here.
   function handleKey(event, inComposer) {
+    // The switcher is a modal layer with its own key handling; nothing behind
+    // it may act on a key while it is up.
+    if (switcher.open) return false
     var ctrl = (event.modifiers & Qt.ControlModifier) !== 0
     var shift = (event.modifiers & Qt.ShiftModifier) !== 0
 
@@ -207,6 +219,7 @@ FloatingWindow {
     }
     if (event.key === Qt.Key_Escape) { client.close(); return true }
     if (ctrl && shift && event.key === Qt.Key_A) { client.toggleAttention(); return true }
+    if (ctrl && event.key === Qt.Key_S) { switcher.show(); return true }
 
     if (ctrl && (event.key === Qt.Key_Plus || event.key === Qt.Key_Equal)) {
       client.stepFontScale(0.1); return true
@@ -287,20 +300,21 @@ FloatingWindow {
     // all. Qt consumes a matched shortcut before the key reaches the focus
     // item, so only bindings that mean the same thing everywhere belong here:
     // the arrows stay out so they can still move the caret in a wrapped draft.
-    Shortcut { sequence: "Tab"; onActivated: win.focusComposer() }
-    Shortcut { sequence: "Shift+Tab"; onActivated: win.focusComposer() }
-    Shortcut { sequence: "Escape"; onActivated: client.close() }
-    Shortcut { sequence: "Ctrl+Tab"; onActivated: client.cycleSpace(1) }
-    Shortcut { sequence: "Ctrl+Shift+Tab"; onActivated: client.cycleSpace(-1) }
+    Shortcut { sequence: "Tab"; enabled: !switcher.open; onActivated: win.focusComposer() }
+    Shortcut { sequence: "Shift+Tab"; enabled: !switcher.open; onActivated: win.focusComposer() }
+    Shortcut { sequence: "Escape"; enabled: !switcher.open; onActivated: client.close() }
+    Shortcut { sequence: "Ctrl+S"; onActivated: switcher.toggle() }
+    Shortcut { sequence: "Ctrl+Tab"; enabled: !switcher.open; onActivated: client.cycleSpace(1) }
+    Shortcut { sequence: "Ctrl+Shift+Tab"; enabled: !switcher.open; onActivated: client.cycleSpace(-1) }
     Shortcut { sequence: "Ctrl+Shift+A"; onActivated: client.toggleAttention() }
-    Shortcut { sequence: "Ctrl+J"; onActivated: win.scrollImpulse(1, false) }
-    Shortcut { sequence: "Ctrl+K"; onActivated: win.scrollImpulse(-1, false) }
-    Shortcut { sequence: "Ctrl+D"; onActivated: win.scrollImpulse(1, true) }
-    Shortcut { sequence: "Ctrl+U"; onActivated: win.scrollImpulse(-1, true) }
-    Shortcut { sequence: "PageDown"; onActivated: win.scrollImpulse(1, true) }
-    Shortcut { sequence: "PageUp"; onActivated: win.scrollImpulse(-1, true) }
-    Shortcut { sequence: "Ctrl+End"; onActivated: win.jumpToLatest() }
-    Shortcut { sequence: "Ctrl+Home"; onActivated: win.jumpToStart() }
+    Shortcut { sequence: "Ctrl+J"; enabled: !switcher.open; onActivated: win.scrollImpulse(1, false) }
+    Shortcut { sequence: "Ctrl+K"; enabled: !switcher.open; onActivated: win.scrollImpulse(-1, false) }
+    Shortcut { sequence: "Ctrl+D"; enabled: !switcher.open; onActivated: win.scrollImpulse(1, true) }
+    Shortcut { sequence: "Ctrl+U"; enabled: !switcher.open; onActivated: win.scrollImpulse(-1, true) }
+    Shortcut { sequence: "PageDown"; enabled: !switcher.open; onActivated: win.scrollImpulse(1, true) }
+    Shortcut { sequence: "PageUp"; enabled: !switcher.open; onActivated: win.scrollImpulse(-1, true) }
+    Shortcut { sequence: "Ctrl+End"; enabled: !switcher.open; onActivated: win.jumpToLatest() }
+    Shortcut { sequence: "Ctrl+Home"; enabled: !switcher.open; onActivated: win.jumpToStart() }
     Shortcut { sequence: "Ctrl+="; onActivated: client.stepFontScale(0.1) }
     Shortcut { sequence: "Ctrl++"; onActivated: client.stepFontScale(0.1) }
     Shortcut { sequence: "Ctrl+-"; onActivated: client.stepFontScale(-0.1) }
@@ -311,6 +325,7 @@ FloatingWindow {
       delegate: Shortcut {
         required property int index
         sequence: "Alt+" + (index + 1)
+        enabled: !switcher.open
         onActivated: client.selectSpace(index)
       }
     }
@@ -367,94 +382,66 @@ FloatingWindow {
             anchors.verticalCenter: parent.verticalCenter
           }
 
-          // One space needs no switcher — it just says where you are.
-          Text {
-            visible: client.linkList.length < 2
-            text: client.activeLink === null
-              ? win.statusLabel
-              : (client.activeLink.displayName
-                 + (client.connected ? "" : " · " + win.statusLabel))
-            color: client.connected ? win.muted : win.statusColor
-            font.family: win.fontFamily
-            font.pixelSize: win.captionSize
+          // Which Subspace you are in, and the way to any other. A button
+          // rather than a tab strip: the list is editable and unbounded, so it
+          // belongs in something that can hold a form, not in the header.
+          Item {
+            id: spaceButton
             anchors.verticalCenter: parent.verticalCenter
-            elide: Text.ElideRight
-            width: Math.max(0, Math.min(implicitWidth,
-              brandClip.width - brand.x - x))
-          }
+            width: spaceRow.implicitWidth + Style.spacing.controlPaddingX * 2
+            height: Math.round(Style.spacing.controlHeight * win.fontScale)
 
-          // More than one, and the header becomes a switcher. Each tab carries
-          // its own connection dot and its own unread count, so a quiet space
-          // and a broken one do not look the same.
-          Row {
-            visible: client.linkList.length > 1
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: Style.spacing.sm
+            Rectangle {
+              anchors.fill: parent
+              radius: Style.cornerRadius > 0 ? Style.cornerRadius : Style.space(4)
+              color: switcher.open ? Style.selectedAccentFill
+                : (spaceArea.containsMouse ? Style.hoverFill : "transparent")
+              border.width: 1
+              border.color: switcher.open ? Util.alpha(win.accent, 0.5)
+                : (spaceArea.containsMouse ? Style.hoverBorderColor : "transparent")
+            }
 
-            Repeater {
-              model: client.linkList
+            Row {
+              id: spaceRow
+              anchors.centerIn: parent
+              spacing: Style.spacing.sm
 
-              delegate: Item {
-                id: tab
-                required property var modelData
-                required property int index
-                readonly property bool current: client.activeIndex === index
-
-                width: tabRow.implicitWidth + Style.spacing.controlPaddingX * 2
-                height: Math.round(Style.spacing.controlHeight * win.fontScale)
-
-                Rectangle {
-                  anchors.fill: parent
-                  radius: Style.cornerRadius > 0 ? Style.cornerRadius : Style.space(4)
-                  color: tab.current ? Style.selectedAccentFill
-                    : (tabArea.containsMouse ? Style.hoverFill : "transparent")
-                  border.width: 1
-                  border.color: tab.current ? Util.alpha(win.accent, 0.55)
-                    : (tabArea.containsMouse ? Style.hoverBorderColor : "transparent")
-                }
-
-                Row {
-                  id: tabRow
-                  anchors.centerIn: parent
-                  spacing: Style.spacing.sm
-
-                  Rectangle {
-                    width: Math.round(win.captionSize * 0.5)
-                    height: width
-                    radius: width / 2
-                    anchors.verticalCenter: parent.verticalCenter
-                    color: tab.modelData.connected ? win.accent : win.urgent
-                    opacity: tab.modelData.connected ? 0.9 : 0.7
-                  }
-
-                  Text {
-                    text: tab.modelData.displayName
-                    anchors.verticalCenter: parent.verticalCenter
-                    color: tab.current ? win.foreground : win.muted
-                    font.family: win.fontFamily
-                    font.pixelSize: win.captionSize
-                    font.weight: tab.current ? Font.DemiBold : Font.Normal
-                  }
-
-                  Text {
-                    visible: tab.modelData.unread > 0
-                    text: tab.modelData.unread
-                    anchors.verticalCenter: parent.verticalCenter
-                    color: win.accent
-                    font.family: win.fontFamily
-                    font.pixelSize: win.captionSize
-                    font.weight: Font.DemiBold
-                  }
-                }
-
-                MouseArea {
-                  id: tabArea
-                  anchors.fill: parent
-                  hoverEnabled: true
-                  cursorShape: Qt.PointingHandCursor
-                  onClicked: client.selectSpace(tab.index)
-                }
+              Text {
+                text: client.activeLink === null ? win.statusLabel
+                  : (client.activeLink.displayName
+                     + (client.connected ? "" : " · " + win.statusLabel))
+                anchors.verticalCenter: parent.verticalCenter
+                color: client.connected ? win.muted : win.statusColor
+                font.family: win.fontFamily
+                font.pixelSize: win.captionSize
               }
+
+              // Traffic waiting in a Subspace you are not looking at.
+              Text {
+                visible: win.unreadElsewhere > 0
+                text: "+" + win.unreadElsewhere
+                anchors.verticalCenter: parent.verticalCenter
+                color: win.accent
+                font.family: win.fontFamily
+                font.pixelSize: win.captionSize
+                font.weight: Font.DemiBold
+              }
+
+              Text {
+                text: "\u25be"
+                anchors.verticalCenter: parent.verticalCenter
+                color: Util.alpha(win.foreground, 0.5)
+                font.family: win.fontFamily
+                font.pixelSize: win.captionSize
+              }
+            }
+
+            MouseArea {
+              id: spaceArea
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: switcher.toggle()
             }
           }
         }
@@ -701,6 +688,14 @@ FloatingWindow {
         cursorShape: Qt.PointingHandCursor
         onClicked: win.jumpToLatest()
       }
+    }
+
+    SpaceSwitcher {
+      id: switcher
+      anchors.fill: parent
+      z: 30
+      client: win.client
+      host: win
     }
 
     Rectangle {

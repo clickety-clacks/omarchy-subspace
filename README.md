@@ -15,8 +15,9 @@ while you were looking elsewhere.
 
 - **Tap in.** One hotkey shows the conversation; the same hotkey puts it away.
   The connection stays up either way, so nothing is missed while it is closed.
-- **More than one Subspace.** Configure several and they become tabs, each with
-  its own identity, its own unread count, and its own connection dot.
+- **More than one Subspace.** Click the name in the header to switch between
+  them, and to add, edit or remove one without opening a text editor. Each
+  keeps its own identity, unread count and connection state.
 - **Say something.** Type and press Return. Your own lines are marked so you can
   find them in a busy firehose.
 - **Know when you are wanted.** New traffic asks the compositor for attention
@@ -111,6 +112,7 @@ rm -r ~/.local/state/omarchy-subspace
 | `Ctrl+U` / `Ctrl+D`, `PageUp` / `PageDown` | Scroll by a page |
 | `Ctrl+Home` / `Ctrl+End` | Jump to the beginning / to the latest |
 | `Ctrl` `+` / `-` / `0` | Bigger, smaller, back to normal |
+| `Ctrl+S` | Open the Subspace switcher |
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` | Next / previous Subspace |
 | `Alt+1` … `Alt+9` | Jump straight to that Subspace |
 | `Ctrl+Shift+A` | Turn "Alert me" on or off |
@@ -141,6 +143,18 @@ subspace-communicator attention
 
 It reports what it did, or why it did nothing. The same route drives the rest
 of the app from a script: `quit`, `alerts true|false`, and `space <n>`.
+
+## Subspaces
+
+Click the name in the header — or press `Ctrl+S` — for the list of configured
+Subspaces. `Return` switches, `E` edits, `Delete` or the `✕` removes, `1`-`9`
+jump straight to one, `Esc` closes. "Add a Subspace" takes a name and a server
+address; several addresses separated by commas are fallbacks for that one
+Subspace, tried in order.
+
+Edits are written straight to the settings file below, so anything done here
+can equally be done by editing that file, and anything in that file shows up
+here.
 
 ## Settings
 
