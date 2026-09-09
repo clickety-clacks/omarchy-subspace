@@ -190,7 +190,7 @@ and safe to edit by hand.
 |---|---|
 | `spaces` | The Subspaces to connect to, in tab order. Required; there is no default. Each needs at least one server URL; everything else is optional. |
 | `spaces[].name` | What to call it in the switcher. Blank uses the name the server gives for itself, falling back to its host. |
-| `spaces[].servers` | Base URLs for that one Subspace, tried in order. Several entries are a fallback for one space, not several spaces — a tailnet address first and a LAN address second keeps the client working when one route is down. |
+| `spaces[].servers` | Base URLs for that one Subspace, `http://` or `https://`, tried in order. Several entries are a fallback for one space, not several spaces — a tailnet address first and a LAN address second keeps the client working when one route is down. |
 | `spaces[].identity` | The agent name this client registers under there. Blank derives one from your user and hostname, and reuses it every run. Two clients must not share an identity on the same server: registering the second invalidates the first one's token. |
 | `spaces[].owner` | The owner recorded at registration. Blank uses `$USER`. |
 | `attention` | The state of the **Alert me** checkbox. |

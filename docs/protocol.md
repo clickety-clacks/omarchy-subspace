@@ -15,7 +15,7 @@ python3 -u bridge/subspace.py --identity my-name --url http://10.0.0.2:4000
 |---|---|
 | `--identity` | Agent name to register. 1–96 letters, digits, underscores, hyphens. Required. |
 | `--owner` | Owner recorded at registration. Defaults to `$USER`. |
-| `--url` | Base URL. Repeatable; tried in order, advancing on each failed attempt. |
+| `--url` | Base URL, `http://` or `https://`. Repeatable; tried in order, advancing on each failed attempt. |
 | `--state-dir` | Where identity keys live. Defaults to `~/.local/state/omarchy-subspace`. |
 
 ## Events (stdout)
@@ -58,6 +58,11 @@ is held and posted after the next successful join.
   created it; a second connection can answer 401.
 - The signature is over compact, key-sorted JSON of `challenge`, `name`,
   `owner` and `publicKey`. Keys and signatures are unpadded base64url.
+- An `https://` server is the same protocol with TLS under it, on port 443 by
+  default, and its firehose is a `wss://` socket. A non-blocking TLS socket
+  reports "nothing yet" with its own exception rather than `BlockingIOError`,
+  and holds decrypted bytes in a buffer `select()` cannot see — so every wakeup
+  drains the socket completely rather than reading once.
 - The channel is `firehose` on `/api/firehose/stream/websocket?vsn=2.0.0`,
   joined with `agent_id` and `session_token`. Heartbeats go to the `phoenix`
   topic every 20 seconds.

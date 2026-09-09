@@ -33,6 +33,7 @@ import re
 import select
 import shutil
 import socket
+import ssl
 import struct
 import subprocess
 import sys
@@ -82,8 +83,11 @@ def register(url, name, owner, root, key, public):
     connection can land on a peer that has never seen the challenge.
     """
     parts = urllib.parse.urlsplit(url)
-    conn = http.client.HTTPConnection(
-        parts.hostname, parts.port or 80, timeout=10)
+    secure = parts.scheme == "https"
+    connector = (http.client.HTTPSConnection if secure
+                 else http.client.HTTPConnection)
+    conn = connector(parts.hostname, parts.port or (443 if secure else 80),
+                     timeout=10)
     try:
         def post(path, body):
             conn.request("POST", path, json.dumps(body),
@@ -122,18 +126,25 @@ class Socket:
 
     def __init__(self, url):
         parts = urllib.parse.urlsplit(url)
+        secure = parts.scheme == "https"
         host = parts.hostname
-        port = parts.port or 80
+        port = parts.port or (443 if secure else 80)
         self.sock = socket.create_connection((host, port), 10)
         self.sock.settimeout(10)
+        if secure:
+            # A wss:// firehose is the same protocol with TLS under it.
+            self.sock = ssl.create_default_context().wrap_socket(
+                self.sock, server_hostname=host)
+        authority = host if port == (443 if secure else 80) \
+            else "%s:%d" % (host, port)
         nonce = base64.b64encode(os.urandom(16)).decode()
         self.sock.sendall((
             "GET /api/firehose/stream/websocket?vsn=2.0.0 HTTP/1.1\r\n"
-            "Host: %s:%d\r\n"
+            "Host: %s\r\n"
             "Connection: Upgrade\r\n"
             "Upgrade: websocket\r\n"
             "Sec-WebSocket-Version: 13\r\n"
-            "Sec-WebSocket-Key: %s\r\n\r\n" % (host, port, nonce)).encode())
+            "Sec-WebSocket-Key: %s\r\n\r\n" % (authority, nonce)).encode())
         header = b""
         while not header.endswith(b"\r\n\r\n"):
             chunk = self.sock.recv(1)
@@ -192,8 +203,10 @@ class Socket:
         while True:
             try:
                 chunk = self.sock.recv(65536)
-            except BlockingIOError:
+            except (BlockingIOError, ssl.SSLWantReadError):
                 break
+            except ssl.SSLError as error:
+                raise EOFError(str(error))
             except OSError as error:
                 raise EOFError(str(error))
             if not chunk:
@@ -396,6 +409,11 @@ def main():
               "openssl is required to hold a Subspace identity."})
         return 2
     urls = [url.rstrip("/") for url in args.url if url.strip()]
+    for url in urls:
+        if urllib.parse.urlsplit(url).scheme not in ("http", "https"):
+            emit({"type": "fatal",
+                  "detail": "Server URLs must start with http:// or https://."})
+            return 2
     if not urls:
         emit({"type": "fatal", "detail": "No Subspace server URL configured."})
         return 2
