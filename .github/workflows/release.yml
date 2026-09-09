@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Semantic version from manifest.json (without v)
+        description: Semantic version from the VERSION file (without v)
         required: true
         type: string
 
@@ -30,7 +30,7 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          test "$(jq -r .version manifest.json)" = "$VERSION"
+          test "$(cat VERSION)" = "$VERSION"
           test "$(git branch --show-current)" = main
           git fetch origin main
           test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
@@ -42,10 +42,11 @@ jobs:
       - name: Validate source
         run: |
           set -euo pipefail
-          jq -e '.schemaVersion == 1 and .id == "clickety-clacks.subspace"
-            and (.kinds | index("panel"))
-            and .keepLoaded == true
-            and .entryPoints.panel == "Communicator.qml"' manifest.json >/dev/null
+          test -f Main.qml
+          test -x bin/subspace-communicator
+          test -x install.sh
+          bash -n bin/subspace-communicator
+          bash -n install.sh
           python3 -m py_compile bridge/subspace.py
 
       - name: Publish GitHub release
