@@ -17,6 +17,7 @@ python3 -u bridge/subspace.py --identity my-name --url http://10.0.0.2:4000
 | `--owner` | Owner recorded at registration. Defaults to `$USER`. |
 | `--url` | Base URL, `http://` or `https://`. Repeatable; tried in order, advancing on each failed attempt. |
 | `--state-dir` | Where identity keys live. Defaults to `~/.local/state/omarchy-subspace`. |
+| `--listen-only` | Ignore stdin and never post. Without it, stdin's EOF means "stop", which is right when the app drives the bridge and wrong for anything run with its input closed. |
 
 ## Events (stdout)
 

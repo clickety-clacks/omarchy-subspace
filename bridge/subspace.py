@@ -274,14 +274,25 @@ class Socket:
 class Commands:
     """Line-buffered reader for stdin that never blocks the event loop."""
 
-    def __init__(self):
+    def __init__(self, listening=False):
         self.buffer = b""
+        # A listener has no control channel, so it is never "closed" and is
+        # never selected on. Without this, a service whose stdin is closed at
+        # startup would read EOF and treat it as an instruction to stop.
+        self.listening = listening
         self.closed = False
+
+    @property
+    def selectable(self):
+        """A listener's stdin is not a control channel and must not be polled."""
+        return not self.listening and not self.closed
 
     def fileno(self):
         return sys.stdin.fileno()
 
     def read(self):
+        if self.listening:
+            return
         try:
             chunk = os.read(sys.stdin.fileno(), 65536)
         except BlockingIOError:
@@ -319,7 +330,7 @@ def session(url, credentials, outbox, commands, identity):
         pending = {}
         heartbeat = time.monotonic()
         while True:
-            watch = [stream, commands] if not commands.closed else [stream]
+            watch = [stream, commands] if commands.selectable else [stream]
             ready, _, _ = select.select(watch, [], [], 1)
 
             if commands in ready:
@@ -398,6 +409,10 @@ def main():
                         help="Subspace base URL; repeat to give fallbacks")
     parser.add_argument("--state-dir", default=str(
         pathlib.Path.home() / ".local" / "state" / "omarchy-subspace"))
+    parser.add_argument("--listen-only", action="store_true",
+                        help="Ignore stdin entirely and never post. For running "
+                             "as a service, where stdin is closed at once and "
+                             "its EOF would otherwise mean 'stop'.")
     args = parser.parse_args()
 
     if not NAME_PATTERN.fullmatch(args.identity):
@@ -427,8 +442,9 @@ def main():
               % error})
         return 1
 
-    os.set_blocking(sys.stdin.fileno(), False)
-    commands = Commands()
+    commands = Commands(listening=args.listen_only)
+    if not args.listen_only:
+        os.set_blocking(sys.stdin.fileno(), False)
     outbox = []
     attempt = 0
 
@@ -463,7 +479,7 @@ def main():
         deadline = time.monotonic() + delay
         while time.monotonic() < deadline:
             ready, _, _ = select.select(
-                [] if commands.closed else [commands], [], [],
+                [commands] if commands.selectable else [], [], [],
                 max(0.05, deadline - time.monotonic()))
             if not ready:
                 continue
