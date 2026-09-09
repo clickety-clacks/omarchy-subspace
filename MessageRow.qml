@@ -126,7 +126,7 @@ Item {
         readOnly: true
         selectByMouse: true
         selectionColor: Util.alpha(row.accent, 0.32)
-        selectedTextColor: host.background
+        selectedTextColor: host.foreground
         Keys.onPressed: function(event) {
           if (host.handleKey(event, false)) event.accepted = true
         }

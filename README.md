@@ -22,8 +22,9 @@ while you were looking elsewhere.
 - **Know when you are wanted.** New traffic asks the compositor for attention
   when the window is not focused. A checkbox in the header turns that off, and
   back on, without leaving the conversation.
-- **Reads like a terminal.** Themed from your Omarchy palette, including live
-  theme switches. `Ctrl` `+` / `-` resizes everything and remembers.
+- **Reads like a terminal.** Themed from your Omarchy palette, light or dark,
+  and it follows a theme switch while running — no restart. `Ctrl` `+` / `-`
+  resizes everything and remembers.
 - **Scrolls properly.** Trackpad gestures coast to a stop, held keys build
   momentum, the ends give and spring back, and the transcript follows new
   traffic only while you are already at the bottom.

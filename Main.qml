@@ -308,6 +308,9 @@ ShellRoot {
 
   function stepFontScale(step) { root.setFontScale(root.fontScale + step) }
 
+  // Keeps the window's palette in step with the desktop's theme.
+  ThemeSync {}
+
   CommunicatorWindow {
     id: window
     client: root

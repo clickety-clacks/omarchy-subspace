@@ -222,6 +222,28 @@ bindings that mean the same thing everywhere may be declared as shortcuts. The
 arrow keys are deliberately absent: inside a multi-line draft they move the
 caret, and everywhere else they scroll.
 
+## Theme
+
+Every colour comes from Omarchy's `Color` and `Style` singletons; there are no
+hardcoded colours, so a light theme and a dark one are the same code path.
+
+Following a theme *change* is the app's own job. `Color` sets
+`watchChanges: false` on the theme files on purpose — inside the shell it is
+told about a change over IPC by `omarchy theme set`, so watching would be
+duplicated work. An application is never told. As a shell plugin this one was
+restarted along with the shell and picked the new palette up by accident; on
+its own it would keep whatever palette it launched with, leaving a light window
+on a dark desktop until relaunched. `ThemeSync.qml` watches the theme files and
+hands them to the same singleton the shell does.
+
+`theme.name` is the trigger rather than the palette files themselves, because
+it changes exactly once per switch whether or not the individual files differ.
+
+One consequence for the colours chosen here: selected text stays
+`foreground`-coloured. The selection fill is a translucent accent wash over the
+page, so text that took the page's own background colour would vanish into it
+on a light theme.
+
 ## Durable state and privacy
 
 No transcript is written to disk. The client's durable state is the settings

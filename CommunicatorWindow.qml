@@ -782,7 +782,7 @@ FloatingWindow {
               textFormat: TextEdit.PlainText
               selectByMouse: true
               selectionColor: Util.alpha(win.accent, 0.32)
-              selectedTextColor: win.background
+              selectedTextColor: win.foreground
               cursorVisible: activeFocus
               onTextChanged: if (win.composerError !== "") win.composerError = ""
               onCursorRectangleChanged: composerScroll.revealCaret()
