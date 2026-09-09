@@ -23,15 +23,17 @@ python3 -u bridge/subspace.py --identity my-name --url http://10.0.0.2:4000
 ```json
 {"type": "status",   "state": "connecting|connected|reconnecting", "detail": "", "url": "", "seconds": 4}
 {"type": "identity", "name": "…", "owner": "…", "agentId": "…"}
-{"type": "server",   "name": "Subetha", "url": "http://eliza:4000"}
+{"type": "server",   "name": "…", "url": "…"}
 {"type": "message",  "id": "…", "text": "…", "ts": "…", "agentId": "…",
                      "agentName": "…", "replay": false, "own": false}
 {"type": "sent",     "ref": 12, "ok": true, "detail": ""}
 {"type": "fatal",    "detail": "…"}
 ```
 
-`replay` marks buffered history the server sends on join — what was already
-said before this client attached. `own` is true when the message came back from
+`server` carries whatever the Subspace calls itself and the address it
+advertises; the client uses the name as a label when the settings file does not
+give one. `replay` marks buffered history the server sends on join — what was
+already said before this client attached. `own` is true when the message came back from
 the server carrying this client's own agent id.
 
 `fatal` means the bridge will not start at all: a bad identity, no `openssl`, no
