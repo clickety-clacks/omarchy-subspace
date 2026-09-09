@@ -233,17 +233,36 @@ Item {
                 color: switcher.foreground
                 font.family: switcher.fontFamily
                 font.pixelSize: host.bodySize
-                font.weight: row.active ? Font.DemiBold : Font.Normal
+                // Unread is worth more than active here: the whole reason to
+                // open this list is to find out where something was said.
+                font.weight: row.modelData.unread > 0 || row.active
+                  ? Font.DemiBold : Font.Normal
               }
 
-              Text {
+              // Something was said here since you last looked. A filled mark
+              // rather than a bare number: the leading dot on this row already
+              // means "connected", and a lone digit beside it reads as part of
+              // the name rather than as news. It carries the count when there
+              // is room for it, and stays a dot when there is not.
+              Rectangle {
+                id: unreadMark
                 visible: row.modelData.unread > 0
-                text: row.modelData.unread
                 anchors.verticalCenter: parent.verticalCenter
+                readonly property int diameter: Math.round(host.bodySize * 0.62)
+                width: Math.max(diameter, unreadCount.implicitWidth + diameter * 0.7)
+                height: diameter
+                radius: height / 2
                 color: switcher.accent
-                font.family: switcher.fontFamily
-                font.pixelSize: host.captionSize
-                font.weight: Font.DemiBold
+
+                Text {
+                  id: unreadCount
+                  anchors.centerIn: parent
+                  text: row.modelData.unread > 99 ? "99+" : row.modelData.unread
+                  color: switcher.background
+                  font.family: switcher.fontFamily
+                  font.pixelSize: Math.round(host.captionSize * 0.85)
+                  font.weight: Font.Bold
+                }
               }
             }
 

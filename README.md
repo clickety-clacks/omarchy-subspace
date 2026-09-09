@@ -147,7 +147,9 @@ of the app from a script: `quit`, `alerts true|false`, and `space <n>`.
 ## Subspaces
 
 Click the name in the header — or press `Ctrl+S` — for the list of configured
-Subspaces. `Return` switches, `E` edits, `Delete` or the `✕` removes, `1`-`9`
+Subspaces. A Subspace that has said something since you last looked is marked
+there, and the header button carries a `+N` for everything waiting outside the
+one you are reading. `Return` switches, `E` edits, `Delete` or the `✕` removes, `1`-`9`
 jump straight to one, `Esc` closes. "Add a Subspace" takes a name and a server
 address; several addresses separated by commas are fallbacks for that one
 Subspace, tried in order.

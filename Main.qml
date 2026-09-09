@@ -441,6 +441,23 @@ ShellRoot {
     function alerts(state: string): string { return root.setAttention(state) }
     function space(index: string): string { return root.selectSpace(Number(index)) }
     function spaces(): string { return window.openSwitcher() }
+    // What each Subspace is doing right now, for scripts and for answering
+    // "is it connected and has anything arrived" without opening the window.
+    function status(): string {
+      var out = []
+      for (var index = 0; index < root.linkList.length; index++) {
+        var link = root.linkList[index]
+        out.push({
+          index: index,
+          name: link.displayName,
+          active: index === root.activeIndex,
+          state: link.connectionState,
+          unread: link.unread,
+          messages: link.messageModel.count
+        })
+      }
+      return JSON.stringify(out)
+    }
     function add(name: string, servers: string): string {
       return root.addSpace(name, servers) ? "ok" : "invalid server address"
     }
