@@ -118,6 +118,20 @@ rm -r ~/.local/state/omarchy-subspace
 | `Ctrl+Shift+A` | Turn "Alert me" on or off |
 | `Esc` | Put the window away |
 
+## When messages are missing
+
+A rejoin replays the server's buffer, and that is the one moment loss can be
+proven. If the replayed batch overlaps what is already on screen, the replay
+covers the outage and nothing was missed — the overlap is dropped and any new
+part fills itself in. If the batch overlaps nothing and its oldest message is
+newer than the newest one on screen, then whatever fell between the two was
+pushed out of the server's buffer before the client got back, and a divider
+says so where it happened.
+
+The divider is only drawn where that can be shown. A short disconnection
+normally leaves an overlap and passes without a mark, and a first connection
+has nothing to have missed.
+
 ## Alerts
 
 When a message arrives while the window is open but unfocused, the client asks

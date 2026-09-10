@@ -32,6 +32,18 @@ QtObject {
   // appears a second time. With it, the replay does the opposite and useful
   // thing: it fills in whatever was said while the connection was down.
   property var seenIds: ({})
+
+  // Rejoining replays the server's buffer. Comparing that batch against what
+  // is already on screen is the one moment loss can be proven: an overlap
+  // means the replay covers everything that happened, and no overlap at all
+  // means whatever fell between our newest message and the batch's oldest was
+  // dropped from the server's buffer before we got back. Neither the socket
+  // nor the server will say so; this is the only evidence there is.
+  property bool resuming: false
+  property bool resumeOverlap: false
+  property int resumeInsertAt: 0
+  property string resumeFromTs: ""
+  property string resumeOldestTs: ""
   // Set while the reader is somewhere above the tail of this space. Dropping
   // the oldest message shifts everything below it up by that row's height, and
   // doing that under someone reading history jumps the page out from under
@@ -109,8 +121,51 @@ QtObject {
     link.pendingSends = remaining
   }
 
+  function beginResume() {
+    link.resuming = true
+    link.resumeOverlap = false
+    link.resumeInsertAt = messages.count
+    link.resumeFromTs = messages.count > 0
+      ? String(messages.get(messages.count - 1).timestamp) : ""
+    link.resumeOldestTs = ""
+  }
+
+  // The batch is over at the first live message, or when the replay stops
+  // arriving.
+  function endResume() {
+    resumeSettle.stop()
+    if (!link.resuming) return
+    link.resuming = false
+    if (link.resumeOverlap) return
+    if (link.resumeOldestTs === "" || link.resumeFromTs === "") return
+    if (Date.parse(link.resumeOldestTs) <= Date.parse(link.resumeFromTs)) return
+    if (link.resumeInsertAt > messages.count) return
+    messages.insert(link.resumeInsertAt, {
+      messageId: "",
+      agentId: "",
+      agentName: "",
+      body: "",
+      timestamp: link.resumeOldestTs,
+      own: false,
+      replay: false,
+      grouped: false,
+      gap: true
+    })
+  }
+
   function appendMessage(event) {
     var id = String(event.id || "")
+    if (link.resuming) {
+      if (event.replay === true) {
+        if (id !== "" && link.seenIds[id] === true) link.resumeOverlap = true
+        // The replay arrives oldest first, so the first of the batch is the
+        // earliest the server still holds.
+        if (link.resumeOldestTs === "") link.resumeOldestTs = String(event.ts || "")
+        resumeSettle.restart()
+      } else {
+        link.endResume()
+      }
+    }
     if (id !== "" && link.seenIds[id] === true) return
     if (id !== "") link.seenIds[id] = true
     var name = String(event.agentName || "unknown")
@@ -127,7 +182,9 @@ QtObject {
       // Consecutive lines from one agent read as one turn, so only the first
       // carries a name. A pause long enough to be a new thought breaks the run.
       grouped: previous !== null && previous.agentName === name
-        && minutesBetween(previous.timestamp, timestamp) < 5
+        && !previous.gap
+        && minutesBetween(previous.timestamp, timestamp) < 5,
+      gap: false
     })
     if (!link.holdTrim) link.trimNow()
   }
@@ -162,6 +219,10 @@ QtObject {
     if (kind === "status") {
       link.connectionState = String(event.state || "")
       link.connectionDetail = String(event.detail || "")
+      // A rejoin with history already on screen is the case worth inspecting;
+      // a first connection has nothing to have missed.
+      if (String(event.state || "") === "connected" && messages.count > 0)
+        link.beginResume()
       return
     }
     if (kind === "identity") { link.agentId = String(event.agentId || ""); return }
@@ -210,6 +271,12 @@ QtObject {
       link.connectionDetail = "The Subspace bridge exited (" + code + ")."
       link.restartTimer.restart()
     }
+  }
+
+  property Timer resumeSettle: Timer {
+    interval: 1500
+    repeat: false
+    onTriggered: link.endResume()
   }
 
   property Timer restartTimer: Timer {

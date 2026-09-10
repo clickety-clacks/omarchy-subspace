@@ -16,6 +16,7 @@ Item {
   required property bool own
   required property bool replay
   required property bool grouped
+  required property bool gap
 
   readonly property color foreground: host.foreground
   readonly property color accent: host.accent
@@ -24,7 +25,7 @@ Item {
   readonly property bool startsUnread: host.unreadAnchorId !== ""
     && host.unreadAnchorId === messageId
 
-  implicitHeight: content.implicitHeight
+  implicitHeight: gap ? gapMark.implicitHeight : content.implicitHeight
   height: implicitHeight
 
   function localTime(value) {
@@ -33,8 +34,64 @@ Item {
     return Qt.formatDateTime(parsed, "HH:mm")
   }
 
+  // What the client could not get. The server replays a bounded buffer on
+  // rejoin, so an outage that outlasts it leaves a hole nothing can fill —
+  // saying so is the only honest thing left to do with it.
+  Column {
+    id: gapMark
+    visible: row.gap
+    width: parent.width
+    spacing: Style.space(6)
+    topPadding: Style.space(10)
+    bottomPadding: Style.space(10)
+
+    Row {
+      width: parent.width
+      spacing: Style.spacing.md
+
+      Rectangle {
+        width: Math.max(0, (parent.width - gapLabel.implicitWidth
+          - parent.spacing * 2) / 2)
+        height: 1
+        color: Util.alpha(host.urgent, 0.45)
+        anchors.verticalCenter: parent.verticalCenter
+      }
+
+      Text {
+        id: gapLabel
+        text: "messages missing"
+        color: Util.alpha(host.urgent, 0.9)
+        font.family: host.fontFamily
+        font.pixelSize: host.captionSize
+        font.letterSpacing: 1
+        anchors.verticalCenter: parent.verticalCenter
+      }
+
+      Rectangle {
+        width: Math.max(0, (parent.width - gapLabel.implicitWidth
+          - parent.spacing * 2) / 2)
+        height: 1
+        color: Util.alpha(host.urgent, 0.45)
+        anchors.verticalCenter: parent.verticalCenter
+      }
+    }
+
+    Text {
+      width: parent.width
+      horizontalAlignment: Text.AlignHCenter
+      wrapMode: Text.WordWrap
+      text: "The connection was gone longer than the server keeps history. "
+        + "Whatever was said before " + row.localTime(row.timestamp)
+        + " is not recoverable."
+      color: Util.alpha(host.foreground, 0.5)
+      font.family: host.fontFamily
+      font.pixelSize: host.captionSize
+    }
+  }
+
   Column {
     id: content
+    visible: !row.gap
     width: parent.width
     spacing: Style.space(3)
 

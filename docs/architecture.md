@@ -91,6 +91,14 @@ protocol. It uses the Python standard library and `openssl`, nothing else.
 
    What this cannot recover is an outage longer than the server's buffer: that
    history is gone from the server too, and there is no cursor to ask for it.
+6. That unrecoverable case is detectable, and is the only one marked. On a
+   rejoin with history already on screen, the replayed batch is compared to
+   what is held: any overlap proves the replay covers the outage. No overlap,
+   plus a batch whose oldest message is newer than the newest one held, proves
+   the span between them was dropped from the server's buffer before the client
+   returned — and a `gap` row is inserted at the seam. Nothing is marked on a
+   first connection, on an older replay, or wherever an overlap exists, because
+   none of those demonstrate loss.
 4. Delivery is confirmed by the server's reply to `post_message`, not by the
    write succeeding. A refused message restores the text to an empty composer
    and says why.
