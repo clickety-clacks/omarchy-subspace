@@ -41,6 +41,12 @@ import time
 import urllib.parse
 
 HEARTBEAT_SECONDS = 20
+# The server answers every heartbeat, so silence for several in a row means the
+# link is gone even though the socket has not said so. Without this a peer that
+# disappears without a FIN — a dropped link, a NAT timeout, a rerouted tailnet,
+# a hard-killed server — leaves the client sitting in select() forever,
+# reporting "connected" and receiving nothing.
+SILENCE_SECONDS = 65
 BACKOFF_SECONDS = [1, 2, 4, 8, 15, 30]
 NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,95}")
 
@@ -156,11 +162,17 @@ class Socket:
         if b"101 Switching Protocols" not in header:
             raise RuntimeError("upgrade refused: %s"
                                % header.split(b"\r\n", 1)[0].decode("latin1"))
+        # Defence in depth for the same failure: the kernel probes an idle
+        # connection and errors it out if the peer is gone.
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
         self.sock.setblocking(False)
         self.buffer = b""
         self.partial = b""
         self.partial_op = 0
         self.ref = 1
+        # Anything at all arriving counts as proof of life, including the
+        # replies to our own heartbeats and any pong.
+        self.last_heard = time.monotonic()
 
     def fileno(self):
         return self.sock.fileno()
@@ -211,6 +223,7 @@ class Socket:
                 raise EOFError(str(error))
             if not chunk:
                 raise EOFError("socket closed")
+            self.last_heard = time.monotonic()
             self.buffer += chunk
         for opcode, final, data in self._frames():
             if opcode == 8:
@@ -397,6 +410,9 @@ def session(url, credentials, outbox, commands, identity):
             if now - heartbeat > HEARTBEAT_SECONDS:
                 stream.push("phoenix", "heartbeat", {})
                 heartbeat = now
+            if now - stream.last_heard > SILENCE_SECONDS:
+                raise EOFError(
+                    "no reply from the server in %ds" % SILENCE_SECONDS)
     finally:
         stream.close()
 

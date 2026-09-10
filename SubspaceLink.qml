@@ -27,6 +27,11 @@ QtObject {
   property int unread: 0
   property string unreadAnchorId: ""
   property int sendSequence: 0
+  // Ids already in the model. A reconnect replays the server's buffer, which
+  // overlaps everything already on screen; without this the whole history
+  // appears a second time. With it, the replay does the opposite and useful
+  // thing: it fills in whatever was said while the connection was down.
+  property var seenIds: ({})
   // Set while the reader is somewhere above the tail of this space. Dropping
   // the oldest message shifts everything below it up by that row's height, and
   // doing that under someone reading history jumps the page out from under
@@ -105,6 +110,9 @@ QtObject {
   }
 
   function appendMessage(event) {
+    var id = String(event.id || "")
+    if (id !== "" && link.seenIds[id] === true) return
+    if (id !== "") link.seenIds[id] = true
     var name = String(event.agentName || "unknown")
     var previous = messages.count > 0 ? messages.get(messages.count - 1) : null
     var timestamp = String(event.ts || "")
@@ -126,7 +134,12 @@ QtObject {
 
   function trimNow() {
     var excess = messages.count - link.messageLimit
-    if (excess > 0) messages.remove(0, excess)
+    if (excess <= 0) return
+    // Forget what is being dropped, so a later replay of it is allowed back in
+    // rather than being mistaken for something already on screen.
+    for (var index = 0; index < excess; index++)
+      delete link.seenIds[messages.get(index).messageId]
+    messages.remove(0, excess)
   }
 
   function minutesBetween(before, after) {

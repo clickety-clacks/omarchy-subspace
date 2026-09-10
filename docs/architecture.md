@@ -76,6 +76,21 @@ protocol. It uses the Python standard library and `openssl`, nothing else.
    URL is reached without restarting anything.
 3. A message typed during an outage is queued in the bridge and posted after
    the next successful join. Nothing typed is dropped silently.
+4. Silence is treated as failure. The server answers every heartbeat, so
+   hearing nothing at all for several in a row means the link is gone even
+   though the socket has not said so — a peer that disappears without a FIN
+   leaves a client sitting in `select()` forever, reporting "connected" and
+   receiving nothing. Anything arriving counts as proof of life; going quiet
+   past `SILENCE_SECONDS` drops the connection and reconnects. TCP keepalive
+   is set as well, for the same failure a layer down.
+5. A replayed message already on screen is dropped, by id. A reconnect replays
+   the server's buffer, which overlaps what is already shown; deduplicating
+   turns that from a duplicate history into gap-filling for whatever was said
+   while the connection was down. Ids are forgotten when their messages are
+   trimmed, so a later replay of them is allowed back in.
+
+   What this cannot recover is an outage longer than the server's buffer: that
+   history is gone from the server too, and there is no cursor to ask for it.
 4. Delivery is confirmed by the server's reply to `post_message`, not by the
    write succeeding. A refused message restores the text to an empty composer
    and says why.
